@@ -94,7 +94,9 @@ async function handleRedaction() {
     targetName: `redacted_${Date.now()}.png`,
   });
 
+  console.log("Offscreen result:", result);
   if (result?.error) throw new Error(result.error);
+  if (!result?.redactedImageUrl) throw new Error("Offscreen did not return a redacted image URL");
 
   reportProgress(95, "Downloading redacted image...");
   await chrome.downloads.download({

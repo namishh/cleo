@@ -298,6 +298,7 @@ async function redactImage(imageUrl, targetName) {
   const img = await loadImage(imageUrl);
   const origW = img.naturalWidth;
   const origH = img.naturalHeight;
+  console.log(`Screenshot loaded: ${origW}x${origH}`);
 
   const canvas = document.createElement("canvas");
   canvas.width = origW;
@@ -305,10 +306,13 @@ async function redactImage(imageUrl, targetName) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(img, 0, 0);
 
-  const [faceBoxes, piiRegions] = await Promise.all([
-    detectFaces(imageUrl, origW, origH),
-    findPiiRegions(imageUrl, origW, origH),
-  ]);
+  reportProgress(25, "Detecting faces...");
+  const faceBoxes = await detectFaces(imageUrl, origW, origH);
+  console.log(`Faces found: ${faceBoxes.length}`);
+
+  reportProgress(45, "Loading OCR engine...");
+  const piiRegions = await findPiiRegions(imageUrl, origW, origH);
+  console.log(`PII regions found: ${piiRegions.length}`);
 
   reportProgress(85, "Applying redactions...");
   ctx.fillStyle = "black";
@@ -317,8 +321,11 @@ async function redactImage(imageUrl, targetName) {
   }
 
   reportProgress(92, "Encoding redacted image...");
+  const redactedImageUrl = canvas.toDataURL("image/png");
+  if (!redactedImageUrl) throw new Error("Canvas produced empty data URL");
+
   return {
-    redactedImageUrl: canvas.toDataURL("image/png"),
+    redactedImageUrl,
     targetName,
     faceCount: faceBoxes.length,
     piiCount: piiRegions.length,
@@ -328,9 +335,16 @@ async function redactImage(imageUrl, targetName) {
 // Register message listener immediately.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "processScreenshot") {
+    console.log("Offscreen received processScreenshot request");
     redactImage(request.imageUrl, request.targetName)
-      .then(sendResponse)
-      .catch((err) => sendResponse({ error: err.message }));
+      .then((result) => {
+        console.log("Offscreen sending result", result);
+        sendResponse(result);
+      })
+      .catch((err) => {
+        console.error("Offscreen processing error:", err);
+        sendResponse({ error: err.message || String(err) });
+      });
     return true;
   }
 });
