@@ -160,6 +160,61 @@ async function captureTab(tabId) {
   return `data:image/png;base64,${result.data}`;
 }
 
+function formatA11yTree(nodes) {
+  const byId = new Map(nodes.map((n) => [n.nodeId, n]));
+  const lines = [];
+  const MAX_LINES = 400;
+  const SKIP_ROLES = new Set(["none", "InlineTextBox", "LineBreak", "generic"]);
+
+  function walk(node, depth) {
+    if (lines.length >= MAX_LINES) return;
+    if (node.ignored) return;
+
+    const role = node.role?.value ?? "generic";
+    const name = String(node.name?.value ?? "").trim();
+    const value = node.value?.value;
+
+    // Skip empty containers to keep the output compact.
+    const skip = SKIP_ROLES.has(role) && !name && (value === undefined || value === null || !String(value).trim());
+
+    if (!skip) {
+      let line = `${"\u00a0 ".repeat(depth)}[${role}]`;
+      if (name) line += ` "${name.slice(0, 80)}"`;
+      if (value !== undefined && value !== null && String(value).trim()) {
+        line += ` = ${String(value).slice(0, 80)}`;
+      }
+      lines.push(line);
+    }
+
+    for (const childId of node.childIds || []) {
+      const child = byId.get(childId);
+      if (child) walk(child, skip ? depth : depth + 1);
+    }
+  }
+
+  const childSet = new Set();
+  for (const n of nodes) for (const c of n.childIds || []) childSet.add(c);
+  const roots = nodes.filter((n) => !childSet.has(n.nodeId));
+  for (const root of roots) walk(root, 0);
+
+  if (lines.length >= MAX_LINES) lines.push("... (truncated)");
+  return lines.join("\n");
+}
+
+async function captureA11yTree(tabId) {
+  try {
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      "Accessibility.getAccessibilityTree",
+      {}
+    );
+    const treeText = formatA11yTree(result.nodes || []);
+    chrome.runtime.sendMessage({ action: "a11yTree", tree: treeText }).catch(() => {});
+  } catch (err) {
+    console.error("A11y tree extraction failed:", err);
+  }
+}
+
 async function runOnce() {
   if (!loopState.running) return;
 
@@ -193,6 +248,9 @@ async function runOnce() {
     reportLoopStatus(
       `Saved ${result.targetName} (faces: ${result.faceCount}, PII: ${result.piiCount})`
     );
+
+    // Extract and display the accessibility tree for this page state.
+    await captureA11yTree(loopState.tabId);
   } catch (err) {
     console.error("Loop iteration failed:", err);
     reportLoopStatus(`Error: ${err.message}`);

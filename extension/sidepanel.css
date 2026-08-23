@@ -81,3 +81,24 @@ button.stop:hover {
 .hidden {
   display: none;
 }
+
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6b7280;
+  margin: 16px 0 6px;
+}
+
+.a11y-tree {
+  margin: 0;
+  padding: 10px;
+  max-height: 300px;
+  overflow: auto;
+  background: #111827;
+  color: #e5e7eb;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}

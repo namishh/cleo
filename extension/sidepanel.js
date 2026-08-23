@@ -35,6 +35,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  const a11yTreeEl = document.getElementById("a11y-tree");
+
   chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "progress") {
       showProgress();
@@ -44,6 +46,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (request.skipped) hideProgress();
     } else if (request.action === "loopStopped") {
       setRunning(false);
+    } else if (request.action === "a11yTree") {
+      a11yTreeEl.textContent = request.tree;
     }
   });
 
