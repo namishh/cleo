@@ -170,110 +170,25 @@ async function captureTab(tabId) {
   return `data:image/png;base64,${result.data}`;
 }
 
-function formatA11yTree(nodes) {
-  const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-  const lines = [];
-  const MAX_LINES = 400;
-  const SKIP_ROLES = new Set(["none", "InlineTextBox", "LineBreak", "generic"]);
-
-  function walk(node, depth) {
-    if (lines.length >= MAX_LINES) return;
-
-    const role = node.role?.value ?? "generic";
-    const name = String(node.name?.value ?? "").trim();
-    const value = node.value?.value;
-
-    // Ignored wrappers: don't print, but keep walking their children —
-    // the real content lives underneath them.
-    if (node.ignored) {
-      for (const childId of node.childIds || []) {
-        const child = byId.get(childId);
-        if (child) walk(child, depth);
-      }
-      return;
-    }
-
-    // Skip empty containers to keep the output compact.
-    const skip = SKIP_ROLES.has(role) && !name && (value === undefined || value === null || !String(value).trim());
-
-    if (!skip) {
-      let line = `${"\u00a0 ".repeat(depth)}[${role}]`;
-      if (name) line += ` "${name.slice(0, 80)}"`;
-      if (value !== undefined && value !== null && String(value).trim()) {
-        line += ` = ${String(value).slice(0, 80)}`;
-      }
-      lines.push(line);
-    }
-
-    for (const childId of node.childIds || []) {
-      const child = byId.get(childId);
-      if (child) walk(child, skip ? depth : depth + 1);
-    }
-  }
-
-  const childSet = new Set();
-  for (const n of nodes) for (const c of n.childIds || []) childSet.add(c);
-  const roots = nodes.filter((n) => !childSet.has(n.nodeId));
-  for (const root of roots) walk(root, 0);
-
-  if (lines.length >= MAX_LINES) lines.push("... (truncated)");
-  return lines.join("\n");
-}
-
-async function ensureDebuggerAttached(tabId) {
+async function getCompactPageSnapshot(tabId) {
   try {
-    const targets = await chrome.debugger.getTargets();
-    const attached = targets.some((t) => t.tabId === tabId && t.attached);
-    if (!attached) {
-      await chrome.debugger.attach({ tabId }, "1.3");
-      loopState.debuggerAttached = true;
-    } else {
-      loopState.debuggerAttached = true;
-    }
-  } catch (err) {
-    // Already attached (e.g. from a previous run) is fine.
-    if (!String(err.message).includes("Another debugger")) throw err;
-    loopState.debuggerAttached = true;
-  }
-}
-
-async function captureA11yTree(tabId) {
-  try {
-    await ensureDebuggerAttached(tabId);
-    // Chrome only computes the full AX tree once the Accessibility domain
-    // is enabled on the session.
-    await chrome.debugger
-      .sendCommand({ tabId }, "Accessibility.enable", {})
-      .catch(() => {});
-    const result = await chrome.debugger.sendCommand(
-      { tabId },
-      "Accessibility.getFullAXTree",
-      {}
-    );
-
-    // Debug: inspect the raw CDP response.
-    const rawNodes = result.nodes || [];
-    console.log(
-      `[a11y] raw nodes: ${rawNodes.length}, ignored: ${rawNodes.filter((n) => n.ignored).length}`
-    );
-    console.log("[a11y] raw response:", result);
-    if (rawNodes.length > 0) {
-      console.log(
-        "[a11y] first 5 nodes:",
-        rawNodes.slice(0, 5).map((n) => ({
-          nodeId: n.nodeId,
-          ignored: n.ignored,
-          role: n.role?.value,
-          name: n.name?.value,
-          childIds: n.childIds,
-        }))
-      );
-    }
-
-    const treeText = formatA11yTree(rawNodes);
-    chrome.runtime.sendMessage({ action: "a11yTree", tree: treeText }).catch(() => {});
-  } catch (err) {
-    console.error("A11y tree extraction failed:", err);
+    const snapshot = await chrome.tabs.sendMessage(tabId, {
+      action: "getCompactAccessibilityTree",
+    });
+    if (snapshot?.error) throw new Error(snapshot.error);
+    return snapshot;
+  } catch (firstError) {
+    // Content scripts are not re-injected into tabs that were already open
+    // when the extension was reloaded. Inject it once and retry.
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    const snapshot = await chrome.tabs.sendMessage(tabId, {
+      action: "getCompactAccessibilityTree",
+    });
+    if (snapshot?.error) throw new Error(snapshot.error);
+    return snapshot;
   }
 }
 
@@ -284,6 +199,25 @@ async function runOnce() {
     const tab = await chrome.tabs.get(loopState.tabId);
     reportLoopStatus(`Capturing tab ${loopState.tabId}...`);
 
+    let pageSnapshot;
+    try {
+      pageSnapshot = await getCompactPageSnapshot(tab.id);
+      console.log(
+        `[a11y] compact snapshot: ${pageSnapshot.elements?.length || 0} elements, ${pageSnapshot.privacyRegions?.length || 0} privacy regions`
+      );
+    } catch (error) {
+      // Restricted browser pages can reject content-script access. Still save
+      // the screenshot, but do not claim that the page has been inspected.
+      console.warn("Compact page snapshot unavailable:", error);
+      pageSnapshot = {
+        tree: `(page DOM unavailable: ${error.message})`,
+        elements: [],
+        privacyRegions: [],
+        viewportWidth: 0,
+        viewportHeight: 0,
+      };
+    }
+
     const dataUrl = await captureTab(tab.id);
 
     await ensureOffscreenDocument();
@@ -293,8 +227,10 @@ async function runOnce() {
       action: "processScreenshot",
       imageUrl: dataUrl,
       targetName: `redacted_tab${loopState.tabId}_${Date.now()}.png`,
+      domPrivacyRegions: pageSnapshot.privacyRegions,
+      viewportWidth: pageSnapshot.viewportWidth,
+      viewportHeight: pageSnapshot.viewportHeight,
     });
-
     console.log("Offscreen result:", result);
     if (result?.error) throw new Error(result.error);
     if (!result?.redactedImageUrl) {
@@ -311,8 +247,11 @@ async function runOnce() {
       `Saved ${result.targetName} (faces: ${result.faceCount}, PII: ${result.piiCount})`
     );
 
-    // Extract and display the accessibility tree for this page state.
-    await captureA11yTree(tab.id);
+    // Display the compact, locally sanitized accessibility tree for this
+    // exact capture. Raw DOM and input values never leave the extension.
+    chrome.runtime
+      .sendMessage({ action: "a11yTree", tree: pageSnapshot.tree })
+      .catch(() => {});
   } catch (err) {
     console.error("Loop iteration failed:", err);
     reportLoopStatus(`Error: ${err.message}`);

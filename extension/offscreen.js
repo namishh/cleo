@@ -4,9 +4,13 @@ const FACE_INPUT_H = 480;
 const FACE_SCORE_THRESH = 0.3;
 const FACE_NMS_THRESH = 0.3;
 
-const EMAIL_RE = /[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/;
-const PHONE_RE = /\b\d{10,}\b/;
-const DATE_RE = /\b\d{4}-\d{2}-\d{2}\b/;
+const EMAIL_RE = /[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/i;
+const PHONE_RE = /(?:\+?\d[\d() .-]{6,}\d)/;
+const DATE_RE = /\b(?:\d{1,4}[-/.]){2}\d{1,4}\b/;
+const PINCODE_RE = /\b[1-9]\d{5}\b/;
+const ZIP_RE = /\b\d{5}(?:-\d{4})?\b/;
+const LOCATION_CONTEXT_RE = /\b(?:deliver(?:y)?|ship(?:ping)?|address|location|postal|pincode|pin code|zip code|postcode|city|state)\b/i;
+const ADDRESS_CONTEXT_RE = /\b(?:deliver(?:y)?\s+to|ship(?:ping)?\s+to|delivery\s+address|shipping\s+address|home\s+address|billing\s+address)\b/i;
 
 const SENSITIVE_LABELS = new Set([
   "name",
@@ -205,10 +209,30 @@ async function findPiiRegions(imageUrl, origW, origH) {
     const phraseText = group.map((w) => w.text.trim()).join(" ");
     const normalized = phraseText.toLowerCase().replace(/[:]+$/g, "");
 
+    // Redact address/location lines as a unit. This catches patterns such as
+    // Amazon's "Deliver to CITYNAME 123456" where the city is not itself a
+    // recognizable PII token.
+    if (
+      ADDRESS_CONTEXT_RE.test(normalized) ||
+      (LOCATION_CONTEXT_RE.test(normalized) &&
+        (PINCODE_RE.test(normalized) || ZIP_RE.test(normalized)))
+    ) {
+      regions.push([
+        Math.min(...group.map((w) => w.bbox.x0)),
+        Math.min(...group.map((w) => w.bbox.y0)),
+        Math.max(...group.map((w) => w.bbox.x1)),
+        Math.max(...group.map((w) => w.bbox.y1)),
+      ]);
+    }
+
     // Regex-based redaction on individual words.
     for (const w of group) {
       const text = w.text.trim();
-      if (EMAIL_RE.test(text) || PHONE_RE.test(text) || DATE_RE.test(text)) {
+      if (
+        EMAIL_RE.test(text) ||
+        PHONE_RE.test(text) ||
+        DATE_RE.test(text)
+      ) {
         regions.push([w.bbox.x0, w.bbox.y0, w.bbox.x1, w.bbox.y1]);
       }
     }
@@ -294,12 +318,29 @@ function findValueToRightOfBox(labelBox, words, rowTol = 20, maxGap = 700) {
   };
 }
 
-async function redactImage(imageUrl, targetName) {
+async function redactImage(
+  imageUrl,
+  targetName,
+  domPrivacyRegions = [],
+  viewportWidth = 0,
+  viewportHeight = 0
+) {
   reportProgress(20, "Loading screenshot...");
   const img = await loadImage(imageUrl);
   const origW = img.naturalWidth;
   const origH = img.naturalHeight;
   console.log(`Screenshot loaded: ${origW}x${origH}`);
+
+  // DOM rectangles are CSS viewport coordinates. CDP screenshots can be in
+  // device pixels, so scale them to the actual screenshot dimensions.
+  const scaleX = viewportWidth > 0 ? origW / viewportWidth : 1;
+  const scaleY = viewportHeight > 0 ? origH / viewportHeight : 1;
+  const domRegions = domPrivacyRegions.map((region) => [
+    Math.max(0, region.x * scaleX),
+    Math.max(0, region.y * scaleY),
+    Math.min(origW, (region.x + region.width) * scaleX),
+    Math.min(origH, (region.y + region.height) * scaleY),
+  ]);
 
   const canvas = document.createElement("canvas");
   canvas.width = origW;
@@ -317,7 +358,7 @@ async function redactImage(imageUrl, targetName) {
 
   reportProgress(85, "Applying redactions...");
   ctx.fillStyle = "black";
-  for (const [x1, y1, x2, y2] of [...faceBoxes, ...piiRegions]) {
+  for (const [x1, y1, x2, y2] of [...faceBoxes, ...piiRegions, ...domRegions]) {
     ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
   }
 
@@ -329,7 +370,7 @@ async function redactImage(imageUrl, targetName) {
     redactedImageUrl,
     targetName,
     faceCount: faceBoxes.length,
-    piiCount: piiRegions.length,
+    piiCount: piiRegions.length + domRegions.length,
   };
 }
 
@@ -337,7 +378,13 @@ async function redactImage(imageUrl, targetName) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "processScreenshot") {
     console.log("Offscreen received processScreenshot request");
-    redactImage(request.imageUrl, request.targetName)
+    redactImage(
+      request.imageUrl,
+      request.targetName,
+      request.domPrivacyRegions || [],
+      request.viewportWidth || 0,
+      request.viewportHeight || 0
+    )
       .then((result) => {
         console.log("Offscreen sending result", result);
         sendResponse(result);
