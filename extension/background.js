@@ -178,11 +178,20 @@ function formatA11yTree(nodes) {
 
   function walk(node, depth) {
     if (lines.length >= MAX_LINES) return;
-    if (node.ignored) return;
 
     const role = node.role?.value ?? "generic";
     const name = String(node.name?.value ?? "").trim();
     const value = node.value?.value;
+
+    // Ignored wrappers: don't print, but keep walking their children —
+    // the real content lives underneath them.
+    if (node.ignored) {
+      for (const childId of node.childIds || []) {
+        const child = byId.get(childId);
+        if (child) walk(child, depth);
+      }
+      return;
+    }
 
     // Skip empty containers to keep the output compact.
     const skip = SKIP_ROLES.has(role) && !name && (value === undefined || value === null || !String(value).trim());
@@ -231,6 +240,11 @@ async function ensureDebuggerAttached(tabId) {
 async function captureA11yTree(tabId) {
   try {
     await ensureDebuggerAttached(tabId);
+    // Chrome only computes the full AX tree once the Accessibility domain
+    // is enabled on the session.
+    await chrome.debugger
+      .sendCommand({ tabId }, "Accessibility.enable", {})
+      .catch(() => {});
     const result = await chrome.debugger.sendCommand(
       { tabId },
       "Accessibility.getFullAXTree",
