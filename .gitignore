@@ -9,8 +9,5 @@
 
 !extension/manifest.json
 
-!extension/models
-!extension/models/*.onnx
-
 !.gitignore
 !.gitattributes
