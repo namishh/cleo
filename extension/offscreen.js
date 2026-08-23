@@ -30,6 +30,9 @@ const STOP_LABELS = new Set([
 let faceSession = null;
 let tesseractWorker = null;
 
+// Tell onnxruntime-web where to find the WASM binaries.
+ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
+
 async function getFaceSession() {
   if (!faceSession) {
     faceSession = await ort.InferenceSession.create(FACE_MODEL_URL, {
@@ -41,7 +44,13 @@ async function getFaceSession() {
 
 async function getTesseractWorker() {
   if (!tesseractWorker) {
-    tesseractWorker = await Tesseract.createWorker("eng");
+    tesseractWorker = await Tesseract.createWorker("eng", 1, {
+      workerPath: chrome.runtime.getURL("lib/worker.min.js"),
+      corePath: chrome.runtime.getURL("lib/tesseract-core-simd.wasm.js"),
+      langPath: chrome.runtime.getURL("tessdata"),
+      gzip: false,
+      logger: (m) => console.log("tesseract:", m),
+    });
   }
   return tesseractWorker;
 }

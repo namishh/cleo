@@ -9,6 +9,12 @@
 
 !extension/manifest.json
 
+!extension/tessdata
+!extension/tessdata/*
+
+!extension/lib
+!extension/lib/*
+
 !extension/models
 !extension/models/*.onnx
 
