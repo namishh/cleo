@@ -13,3 +13,4 @@
 !extension/models/*.onnx
 
 !.gitignore
+!.gitattributes
