@@ -1,4 +1,10 @@
+import { AutoTokenizer } from "./lib/transformers.min.js";
+
 const FACE_MODEL_URL = chrome.runtime.getURL("models/yunet_fact_detection_may_2026.onnx");
+const GLINER_MODEL_URL = chrome.runtime.getURL("models/gliner_pii_edge.onnx");
+const GLINER_TOKENIZER_URL = chrome.runtime.getURL("models/gliner-tokenizer");
+const GLINER_CLS_TOKEN_ID = 50281;
+const GLINER_END_TOKEN_ID = 50282;
 const FACE_INPUT_W = 640;
 const FACE_INPUT_H = 480;
 const FACE_SCORE_THRESH = 0.3;
@@ -32,6 +38,8 @@ const STOP_LABELS = new Set([
 ]);
 
 let faceSession = null;
+let glinerSession = null;
+let glinerTokenizer = null;
 let tesseractWorker = null;
 
 // Tell onnxruntime-web where to find the WASM binaries.
@@ -55,6 +63,24 @@ async function getFaceSession() {
     });
   }
   return faceSession;
+}
+
+async function getGlinerSession() {
+  if (!glinerSession) {
+    reportProgress(77, "Loading PII model...");
+    glinerSession = await ort.InferenceSession.create(GLINER_MODEL_URL, {
+      executionProviders: ["wasm"],
+    });
+  }
+  return glinerSession;
+}
+
+async function getGlinerTokenizer() {
+  if (!glinerTokenizer) {
+    reportProgress(76, "Loading PII tokenizer...");
+    glinerTokenizer = await AutoTokenizer.from_pretrained(GLINER_TOKENIZER_URL);
+  }
+  return glinerTokenizer;
 }
 
 async function getTesseractWorker() {
@@ -195,14 +221,129 @@ function nms(boxes, scores, threshold) {
   return keep;
 }
 
+function tokenizerIds(result) {
+  const data = result?.input_ids?.data;
+  if (!data) throw new Error("PII tokenizer returned no input IDs");
+  return Array.from(data, Number);
+}
+
+async function detectGlinerPii(words) {
+  if (!words.length) return [];
+
+  const tokenizer = await getGlinerTokenizer();
+  const session = await getGlinerSession();
+  const prompt = ["<<ENT>>", "pii", "<<SEP>>"];
+  const inputIds = [GLINER_CLS_TOKEN_ID];
+  const wordsMask = [0];
+
+  for (const word of prompt) {
+    const ids = tokenizerIds(tokenizer(word, { add_special_tokens: false }));
+    inputIds.push(...ids);
+    wordsMask.push(...ids.map(() => 0));
+  }
+
+  const usableWords = [];
+  for (const word of words) {
+    const ids = tokenizerIds(tokenizer(word.text, { add_special_tokens: false }));
+    // Leave room for the final [SEP] token and stay below the model's 384-word
+    // export limit. The model works on whole OCR words, not subword pieces.
+    if (inputIds.length + ids.length + 1 > 384) break;
+    usableWords.push(word);
+    inputIds.push(...ids);
+    wordsMask.push(...ids.map((_, index) => (index === 0 ? usableWords.length : 0)));
+  }
+
+  inputIds.push(GLINER_END_TOKEN_ID);
+  wordsMask.push(0);
+  const length = inputIds.length;
+  const ids = BigInt64Array.from(inputIds, BigInt);
+  const mask = BigInt64Array.from(wordsMask, BigInt);
+  const attention = BigInt64Array.from({ length }, () => 1n);
+
+  const output = await session.run({
+    input_ids: new ort.Tensor("int64", ids, [1, length]),
+    attention_mask: new ort.Tensor("int64", attention, [1, length]),
+    words_mask: new ort.Tensor("int64", mask, [1, length]),
+    text_lengths: new ort.Tensor("int64", BigInt64Array.from([usableWords.length], BigInt), [1, 1]),
+  });
+
+  const logits = output.logits;
+  const dims = logits.dims;
+  const data = logits.data;
+  if (!dims || dims.length !== 4 || dims[0] !== 1 || dims[3] !== 3) {
+    throw new Error(`Unexpected GLiNER output shape: ${dims}`);
+  }
+
+  const wordCount = Math.min(usableWords.length, dims[1]);
+  const labelCount = dims[2];
+  const threshold = 0.5;
+  const maxSpanWords = 12;
+  const sigmoid = (value) => 1 / (1 + Math.exp(-value));
+  const at = (word, label, marker) =>
+    sigmoid(data[((word * labelCount + label) * 3) + marker]);
+  const candidates = [];
+
+  // GLiNER token exports use three markers per label: start, end, inside.
+  for (let label = 0; label < labelCount; label++) {
+    for (let start = 0; start < wordCount; start++) {
+      if (at(start, label, 0) < threshold) continue;
+      for (let end = start; end < Math.min(wordCount, start + maxSpanWords); end++) {
+        if (at(end, label, 1) < threshold) continue;
+        const inside = usableWords.slice(start, end + 1).every((_, index) =>
+          at(start + index, label, 2) >= threshold
+        );
+        if (!inside) continue;
+
+        const score = Math.min(
+          at(start, label, 0),
+          at(end, label, 1),
+          ...usableWords.slice(start, end + 1).map((_, index) => at(start + index, label, 2))
+        );
+        candidates.push({ start, end, score });
+      }
+    }
+  }
+
+  // Match GLiNER's flat-NER behavior: retain the highest-confidence
+  // non-overlapping spans rather than black-boxing every candidate.
+  candidates.sort((a, b) => b.score - a.score);
+  const selected = [];
+  for (const candidate of candidates) {
+    if (selected.some((other) => candidate.start <= other.end && other.start <= candidate.end)) {
+      continue;
+    }
+    selected.push(candidate);
+  }
+
+  return selected
+    .sort((a, b) => a.start - b.start)
+    .map(({ start, end }) => [
+      Math.min(...usableWords.slice(start, end + 1).map((w) => w.bbox.x0)),
+      Math.min(...usableWords.slice(start, end + 1).map((w) => w.bbox.y0)),
+      Math.max(...usableWords.slice(start, end + 1).map((w) => w.bbox.x1)),
+      Math.max(...usableWords.slice(start, end + 1).map((w) => w.bbox.y1)),
+    ]);
+}
+
 async function findPiiRegions(imageUrl, origW, origH) {
   const worker = await getTesseractWorker();
   reportProgress(55, "Reading text from screenshot...");
   const result = await worker.recognize(imageUrl);
   const words = result.data.words || [];
 
-  reportProgress(75, "Finding sensitive information...");
-  const regions = [];
+  reportProgress(75, "Running PII model...");
+  let regions = [];
+  try {
+    regions = await detectGlinerPii(words);
+    console.log(`GLiNER regions found: ${regions.length}`);
+  } catch (error) {
+    // Regex/label checks below remain the fallback if the model assets or
+    // tokenizer are unavailable.
+    console.warn("GLiNER inference unavailable:", error);
+  }
+
+  // Second pass: deterministic regex and contextual label checks.
+  reportProgress(82, "Checking regex and address patterns...");
   const groups = groupRowLabels(words);
 
   for (const group of groups) {
