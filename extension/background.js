@@ -15,6 +15,7 @@ let loopState = {
   tabId: null,
   windowId: null,
   timer: null,
+  debuggerAttached: false,
 };
 
 function reportProgress(percent, message) {
@@ -112,7 +113,19 @@ async function startLoop() {
     tabId: tab.id,
     windowId: tab.windowId,
     timer: null,
+    debuggerAttached: false,
   };
+
+  // Attach the debugger so we can capture the tab even when it's in the
+  // background. Chrome shows a "debugging" infobar while attached.
+  try {
+    await chrome.debugger.attach({ tabId: tab.id }, "1.3");
+    loopState.debuggerAttached = true;
+  } catch (err) {
+    // Already attached (e.g. from a previous run) is fine.
+    if (!String(err.message).includes("Another debugger")) throw err;
+    loopState.debuggerAttached = true;
+  }
 
   // Run once immediately, then every 5 seconds.
   runOnce();
@@ -125,25 +138,36 @@ function stopLoop() {
   if (loopState.timer) {
     clearInterval(loopState.timer);
   }
-  loopState = { running: false, tabId: null, windowId: null, timer: null };
+  if (loopState.debuggerAttached && loopState.tabId != null) {
+    chrome.debugger.detach({ tabId: loopState.tabId }).catch(() => {});
+  }
+  loopState = {
+    running: false,
+    tabId: null,
+    windowId: null,
+    timer: null,
+    debuggerAttached: false,
+  };
   chrome.runtime.sendMessage({ action: "loopStopped" }).catch(() => {});
+}
+
+async function captureTab(tabId) {
+  const result = await chrome.debugger.sendCommand(
+    { tabId },
+    "Page.captureScreenshot",
+    { format: "png", fromSurface: true }
+  );
+  return `data:image/png;base64,${result.data}`;
 }
 
 async function runOnce() {
   if (!loopState.running) return;
 
   try {
-    // Only capture when the pinned tab is the visible/active tab in its window.
     const tab = await chrome.tabs.get(loopState.tabId);
-    if (!tab.active) {
-      reportLoopStatus(`Skipped (tab ${loopState.tabId} not visible)`, true);
-      return;
-    }
-
     reportLoopStatus(`Capturing tab ${loopState.tabId}...`);
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: "png",
-    });
+
+    const dataUrl = await captureTab(tab.id);
 
     await ensureOffscreenDocument();
 
@@ -172,5 +196,13 @@ async function runOnce() {
   } catch (err) {
     console.error("Loop iteration failed:", err);
     reportLoopStatus(`Error: ${err.message}`);
+    // If the tab was closed or the debugger detached, stop the loop.
+    if (
+      String(err.message).includes("No tab with id") ||
+      String(err.message).includes("Inspector is not attached") ||
+      String(err.message).includes("tab was closed")
+    ) {
+      stopLoop();
+    }
   }
 }

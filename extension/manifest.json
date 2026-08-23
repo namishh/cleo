@@ -11,7 +11,8 @@
     "scripting",
     "sidePanel",
     "offscreen",
-    "downloads"
+    "downloads",
+    "debugger"
   ],
   "host_permissions": ["<all_urls>"],
   "side_panel": {
