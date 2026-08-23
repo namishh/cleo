@@ -250,7 +250,27 @@ async function captureA11yTree(tabId) {
       "Accessibility.getFullAXTree",
       {}
     );
-    const treeText = formatA11yTree(result.nodes || []);
+
+    // Debug: inspect the raw CDP response.
+    const rawNodes = result.nodes || [];
+    console.log(
+      `[a11y] raw nodes: ${rawNodes.length}, ignored: ${rawNodes.filter((n) => n.ignored).length}`
+    );
+    console.log("[a11y] raw response:", result);
+    if (rawNodes.length > 0) {
+      console.log(
+        "[a11y] first 5 nodes:",
+        rawNodes.slice(0, 5).map((n) => ({
+          nodeId: n.nodeId,
+          ignored: n.ignored,
+          role: n.role?.value,
+          name: n.name?.value,
+          childIds: n.childIds,
+        }))
+      );
+    }
+
+    const treeText = formatA11yTree(rawNodes);
     chrome.runtime.sendMessage({ action: "a11yTree", tree: treeText }).catch(() => {});
   } catch (err) {
     console.error("A11y tree extraction failed:", err);
