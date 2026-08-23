@@ -20,7 +20,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
+
+  if (request.action === "progress") {
+    // Forward progress updates from the offscreen document to the side panel.
+    chrome.runtime.sendMessage(request).catch(() => {});
+    sendResponse({ ok: true });
+    return false;
+  }
 });
+
+function reportProgress(percent, message) {
+  chrome.runtime
+    .sendMessage({ action: "progress", percent, message })
+    .catch(() => {});
+}
 
 async function ensureOffscreenDocument() {
   if (await hasOffscreenDocument()) {
@@ -36,11 +49,11 @@ async function ensureOffscreenDocument() {
 
   offscreenReadyPromise = new Promise((resolve, reject) => {
     offscreenResolve = resolve;
-    // Fail fast if offscreen never reports ready.
     setTimeout(() => reject(new Error("Offscreen document failed to become ready")), 10000);
   });
 
   console.log("Creating offscreen document...");
+  reportProgress(5, "Preparing redaction engine...");
   await chrome.offscreen.createDocument({
     url: "offscreen.html",
     reasons: ["WORKERS", "DOM_PARSER"],
@@ -64,6 +77,7 @@ async function hasOffscreenDocument() {
 }
 
 async function handleRedaction() {
+  reportProgress(10, "Capturing screenshot...");
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab");
 
@@ -73,6 +87,7 @@ async function handleRedaction() {
 
   await ensureOffscreenDocument();
 
+  reportProgress(20, "Running redaction models...");
   const result = await chrome.runtime.sendMessage({
     action: "processScreenshot",
     imageUrl: dataUrl,
@@ -81,11 +96,13 @@ async function handleRedaction() {
 
   if (result?.error) throw new Error(result.error);
 
+  reportProgress(95, "Downloading redacted image...");
   await chrome.downloads.download({
     url: result.redactedImageUrl,
     filename: result.targetName,
     saveAs: false,
   });
 
+  reportProgress(100, "Done");
   return { filename: result.targetName };
 }

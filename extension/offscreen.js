@@ -33,8 +33,15 @@ let tesseractWorker = null;
 // Tell onnxruntime-web where to find the WASM binaries.
 ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
 
+function reportProgress(percent, message) {
+  chrome.runtime
+    .sendMessage({ action: "progress", percent, message })
+    .catch(() => {});
+}
+
 async function getFaceSession() {
   if (!faceSession) {
+    reportProgress(25, "Loading face detection model...");
     faceSession = await ort.InferenceSession.create(FACE_MODEL_URL, {
       executionProviders: ["wasm"],
     });
@@ -44,6 +51,7 @@ async function getFaceSession() {
 
 async function getTesseractWorker() {
   if (!tesseractWorker) {
+    reportProgress(45, "Loading OCR engine...");
     tesseractWorker = await Tesseract.createWorker("eng", 1, {
       workerPath: chrome.runtime.getURL("lib/worker.min.js"),
       corePath: chrome.runtime.getURL("lib/tesseract-core-simd.wasm.js"),
@@ -82,6 +90,7 @@ function imageDataToBgrFloatTensor(imageData, width, height) {
 }
 
 async function detectFaces(imageUrl, origW, origH) {
+  reportProgress(30, "Preparing image for face detection...");
   const img = await loadImage(imageUrl);
 
   // Resize to model input size (letterbox is not used; simple resize like Python script)
@@ -95,6 +104,7 @@ async function detectFaces(imageUrl, origW, origH) {
   const inputTensor = imageDataToBgrFloatTensor(imageData, FACE_INPUT_W, FACE_INPUT_H);
 
   const session = await getFaceSession();
+  reportProgress(35, "Detecting faces...");
   const outputs = await session.run({ input: inputTensor });
 
   const strides = [8, 16, 32];
@@ -178,9 +188,11 @@ function nms(boxes, scores, threshold) {
 
 async function findPiiRegions(imageUrl, origW, origH) {
   const worker = await getTesseractWorker();
+  reportProgress(55, "Reading text from screenshot...");
   const result = await worker.recognize(imageUrl);
   const words = result.data.words || [];
 
+  reportProgress(75, "Finding sensitive information...");
   const regions = [];
   const groups = groupRowLabels(words);
 
@@ -278,6 +290,7 @@ function findValueToRightOfBox(labelBox, words, rowTol = 20, maxGap = 700) {
 }
 
 async function redactImage(imageUrl, targetName) {
+  reportProgress(20, "Loading screenshot...");
   const img = await loadImage(imageUrl);
   const origW = img.naturalWidth;
   const origH = img.naturalHeight;
@@ -293,11 +306,13 @@ async function redactImage(imageUrl, targetName) {
     findPiiRegions(imageUrl, origW, origH),
   ]);
 
+  reportProgress(85, "Applying redactions...");
   ctx.fillStyle = "black";
   for (const [x1, y1, x2, y2] of [...faceBoxes, ...piiRegions]) {
     ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
   }
 
+  reportProgress(92, "Encoding redacted image...");
   return {
     redactedImageUrl: canvas.toDataURL("image/png"),
     targetName,
