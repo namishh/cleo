@@ -58,6 +58,7 @@ async function getTesseractWorker() {
     reportProgress(45, "Loading OCR engine...");
     tesseractWorker = await Tesseract.createWorker("eng", 1, {
       workerPath: chrome.runtime.getURL("lib/worker.min.js"),
+      workerBlobURL: false,
       corePath: chrome.runtime.getURL("lib/tesseract-core-simd.wasm.js"),
       langPath: chrome.runtime.getURL("tessdata"),
       gzip: false,
