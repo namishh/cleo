@@ -2,16 +2,21 @@
   "manifest_version": 3,
   "name": "Browser Agent Sidebar",
   "version": "1.0.0",
-  "description": "A simple hello-world Chrome side panel extension.",
+  "description": "A simple hello-world Chrome side panel extension with screenshot redaction.",
   "permissions": [
     "storage",
     "tabs",
     "windows",
     "activeTab",
     "scripting",
-    "sidePanel"
+    "sidePanel",
+    "offscreen",
+    "downloads"
   ],
   "host_permissions": ["<all_urls>"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; object-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://tesseract.projectnaptha.com;"
+  },
   "side_panel": {
     "default_path": "sidepanel.html"
   },
@@ -36,6 +41,12 @@
       "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["models/*"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

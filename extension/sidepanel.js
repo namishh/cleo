@@ -1,18 +1,22 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const greetBtn = document.getElementById("greet-btn");
+  const runBtn = document.getElementById("run-btn");
   const statusEl = document.getElementById("status");
 
-  greetBtn.addEventListener("click", async () => {
+  runBtn.addEventListener("click", async () => {
+    statusEl.textContent = "Capturing and redacting...";
+    runBtn.disabled = true;
+
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id) {
-        const response = await chrome.tabs.sendMessage(tab.id, { action: "greet" });
-        statusEl.textContent = `Said hello to: ${response?.title ?? tab.url}`;
+      const response = await chrome.runtime.sendMessage({ action: "redactScreenshot" });
+      if (response?.error) {
+        statusEl.textContent = `Error: ${response.error}`;
       } else {
-        statusEl.textContent = "No active tab found.";
+        statusEl.textContent = `Saved: ${response.filename}`;
       }
     } catch (err) {
       statusEl.textContent = `Error: ${err.message}`;
+    } finally {
+      runBtn.disabled = false;
     }
   });
 });
