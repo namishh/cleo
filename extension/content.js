@@ -178,7 +178,16 @@ function privacyElementForTextNode(textNode) {
   // Walking far up the tree made any page containing one sensitive word
   // (e.g. "address" in a nav link) redact its entire header.
   const directMatch = textLooksSensitive(rawText);
-  if (!directMatch) return null;
+
+  // Amazon-style widgets split text across sibling nodes:
+  //   <span>Deliver to</span> <span>Namish</span> <span>CITY 123456</span>
+  // so a single node may only hold "CITY" or "123456". If the node sits in
+  // a location-labelled control, treat its own text as sensitive too.
+  const inLocationControl = !!textNode.parentElement?.closest(
+    '[id*=location],[id*=deliver],[class*=glow],[class*=deliver],[class*=address],[aria-label*=location i],[aria-label*=deliver i],[aria-label*=address i]'
+  );
+
+  if (!directMatch && !inLocationControl) return null;
 
   let element = textNode.parentElement;
   for (let depth = 0; element && depth < 2; depth++, element = element.parentElement) {
@@ -216,6 +225,16 @@ function collectPrivacyRegions() {
     ) {
       regions.push(rectFor(element));
     }
+  }
+
+  // Whole location widgets (Amazon "Deliver to CITY 123456"). Matched by id,
+  // class, or aria-label so split text nodes are covered by one mask.
+  for (const element of document.querySelectorAll(
+    '[id*=location i],[id*=deliver i],[id*=glow i],[class*=glow i],[class*=deliver i],[aria-label*=deliver i],[aria-label*=location i]'
+  )) {
+    if (!isVisible(element)) continue;
+    const rect = rectFor(element);
+    if (rect.width > 0 && rect.height > 0) regions.push(rect);
   }
 
   return mergeRegions(regions);
