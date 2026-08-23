@@ -231,7 +231,15 @@ function mergeRegions(regions) {
   return result.slice(0, 200);
 }
 
-function collectElements() {
+function regionsOverlap(a, b) {
+  return (
+    Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
+      Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)) >
+    0
+  );
+}
+
+function collectElements(privacyRegions = []) {
   const all = new Set([
     ...document.querySelectorAll(INTERACTIVE_SELECTOR),
     ...document.querySelectorAll(LANDMARK_SELECTOR),
@@ -242,8 +250,9 @@ function collectElements() {
     if (!isVisible(element)) continue;
 
     const role = roleFor(element);
-    const name = accessibleName(element);
     const rect = rectFor(element);
+    const isRedacted = privacyRegions.some((region) => regionsOverlap(rect, region));
+    const name = isRedacted ? "[REDACTED]" : accessibleName(element);
     if (!name && role === "generic") continue;
 
     const id = `e${elements.length + 1}`;
@@ -274,11 +283,12 @@ function formatTree(elements) {
 
 function getCompactAccessibilityTree() {
   elementRefs = new Map();
-  const elements = collectElements();
+  const privacyRegions = collectPrivacyRegions();
+  const elements = collectElements(privacyRegions);
   return {
     tree: formatTree(elements),
     elements,
-    privacyRegions: collectPrivacyRegions(),
+    privacyRegions,
     viewportWidth: innerWidth,
     viewportHeight: innerHeight,
     url: location.href,
