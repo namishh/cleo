@@ -1,0 +1,12 @@
+*
+!extension
+!extension/icons
+!extension/icons/*
+
+!extension/*.html
+!extension/*.css
+!extension/*.js
+
+!extension/manifest.json
+
+!.gitignore
