@@ -37,6 +37,14 @@ button:hover {
   background: #4338ca;
 }
 
+button.stop {
+  background: #dc2626;
+}
+
+button.stop:hover {
+  background: #b91c1c;
+}
+
 #status {
   margin-top: 12px;
   color: #1f2937;

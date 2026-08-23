@@ -1,9 +1,11 @@
 document.addEventListener("DOMContentLoaded", () => {
-  const runBtn = document.getElementById("run-btn");
+  const toggleBtn = document.getElementById("toggle-btn");
   const statusEl = document.getElementById("status");
   const progressContainer = document.getElementById("progress-container");
   const progressBar = document.getElementById("progress-bar");
   const progressText = document.getElementById("progress-text");
+
+  let running = false;
 
   function setProgress(percent, message) {
     const clamped = Math.max(0, Math.min(100, Math.round(percent)));
@@ -15,7 +17,6 @@ document.addEventListener("DOMContentLoaded", () => {
   function showProgress() {
     progressContainer.classList.remove("hidden");
     progressText.classList.remove("hidden");
-    setProgress(0, "Starting...");
   }
 
   function hideProgress() {
@@ -23,29 +24,56 @@ document.addEventListener("DOMContentLoaded", () => {
     progressText.classList.add("hidden");
   }
 
-  // Listen for progress updates from the service worker.
+  function setRunning(state) {
+    running = state;
+    toggleBtn.textContent = running ? "Stop" : "Start";
+    toggleBtn.classList.toggle("start", !running);
+    toggleBtn.classList.toggle("stop", running);
+    if (!running) {
+      hideProgress();
+      statusEl.textContent = "Stopped";
+    }
+  }
+
   chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "progress") {
+      showProgress();
       setProgress(request.percent, request.message);
+    } else if (request.action === "loopStatus") {
+      statusEl.textContent = request.message;
+      if (request.skipped) hideProgress();
+    } else if (request.action === "loopStopped") {
+      setRunning(false);
     }
   });
 
-  runBtn.addEventListener("click", async () => {
-    showProgress();
-    runBtn.disabled = true;
+  // Restore running state when the panel (re)opens.
+  chrome.runtime.sendMessage({ action: "getLoopState" }, (response) => {
+    if (response?.running) {
+      setRunning(true);
+      statusEl.textContent = `Running on tab ${response.tabId}`;
+    }
+  });
 
+  toggleBtn.addEventListener("click", async () => {
+    toggleBtn.disabled = true;
     try {
-      const response = await chrome.runtime.sendMessage({ action: "redactScreenshot" });
-      if (response?.error) {
-        statusEl.textContent = `Error: ${response.error}`;
+      if (!running) {
+        const response = await chrome.runtime.sendMessage({ action: "startLoop" });
+        if (response?.error) {
+          statusEl.textContent = `Error: ${response.error}`;
+        } else {
+          setRunning(true);
+          statusEl.textContent = `Running on tab ${response.tabId}`;
+        }
       } else {
-        setProgress(100, `Saved: ${response.filename}`);
+        await chrome.runtime.sendMessage({ action: "stopLoop" });
+        setRunning(false);
       }
     } catch (err) {
       statusEl.textContent = `Error: ${err.message}`;
     } finally {
-      runBtn.disabled = false;
-      setTimeout(hideProgress, 2000);
+      toggleBtn.disabled = false;
     }
   });
 });
