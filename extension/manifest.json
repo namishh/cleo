@@ -43,7 +43,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["models/*", "models/gliner-tokenizer/*", "lib/*", "tessdata/*"],
+      "resources": ["models/*", "models/kiji-tokenizer/*", "lib/*", "tessdata/*"],
       "matches": ["<all_urls>"]
     }
   ],

@@ -1,10 +1,8 @@
 import { AutoTokenizer } from "./lib/transformers.min.js";
 
 const FACE_MODEL_URL = chrome.runtime.getURL("models/yunet_fact_detection_may_2026.onnx");
-const GLINER_MODEL_URL = chrome.runtime.getURL("models/gliner_pii_edge.onnx");
-const GLINER_TOKENIZER_URL = chrome.runtime.getURL("models/gliner-tokenizer");
-const GLINER_CLS_TOKEN_ID = 50281;
-const GLINER_END_TOKEN_ID = 50282;
+const KIJI_MODEL_URL = chrome.runtime.getURL("models/kiji-pii-model.onnx");
+const KIJI_TOKENIZER_URL = chrome.runtime.getURL("models/kiji-tokenizer");
 const FACE_INPUT_W = 640;
 const FACE_INPUT_H = 480;
 const FACE_SCORE_THRESH = 0.3;
@@ -38,8 +36,9 @@ const STOP_LABELS = new Set([
 ]);
 
 let faceSession = null;
-let glinerSession = null;
-let glinerTokenizer = null;
+let kijiSession = null;
+let kijiTokenizer = null;
+let kijiLabels = null;
 let tesseractWorker = null;
 
 // Tell onnxruntime-web where to find the WASM binaries.
@@ -65,22 +64,31 @@ async function getFaceSession() {
   return faceSession;
 }
 
-async function getGlinerSession() {
-  if (!glinerSession) {
-    reportProgress(77, "Loading PII model...");
-    glinerSession = await ort.InferenceSession.create(GLINER_MODEL_URL, {
+async function getKijiSession() {
+  if (!kijiSession) {
+    reportProgress(77, "Loading Kiji PII model...");
+    kijiSession = await ort.InferenceSession.create(KIJI_MODEL_URL, {
       executionProviders: ["wasm"],
     });
   }
-  return glinerSession;
+  return kijiSession;
 }
 
-async function getGlinerTokenizer() {
-  if (!glinerTokenizer) {
-    reportProgress(76, "Loading PII tokenizer...");
-    glinerTokenizer = await AutoTokenizer.from_pretrained(GLINER_TOKENIZER_URL);
+async function getKijiTokenizer() {
+  if (!kijiTokenizer) {
+    reportProgress(76, "Loading Kiji tokenizer...");
+    kijiTokenizer = await AutoTokenizer.from_pretrained(KIJI_TOKENIZER_URL);
   }
-  return glinerTokenizer;
+  return kijiTokenizer;
+}
+
+async function getKijiLabels() {
+  if (!kijiLabels) {
+    const response = await fetch(chrome.runtime.getURL("models/kiji-tokenizer/label_mappings.json"));
+    if (!response.ok) throw new Error(`Could not load Kiji labels: ${response.status}`);
+    kijiLabels = await response.json();
+  }
+  return kijiLabels.pii.id2label;
 }
 
 async function getTesseractWorker() {
@@ -227,102 +235,120 @@ function tokenizerIds(result) {
   return Array.from(data, Number);
 }
 
-async function detectGlinerPii(words) {
+function softmax(values) {
+  const max = Math.max(...values);
+  const exps = values.map((value) => Math.exp(value - max));
+  const total = exps.reduce((sum, value) => sum + value, 0);
+  return exps.map((value) => value / total);
+}
+
+async function detectKijiPii(words) {
   if (!words.length) return [];
 
-  const tokenizer = await getGlinerTokenizer();
-  const session = await getGlinerSession();
-  const prompt = ["<<ENT>>", "pii", "<<SEP>>"];
-  const inputIds = [GLINER_CLS_TOKEN_ID];
-  const wordsMask = [0];
+  const tokenizer = await getKijiTokenizer();
+  const session = await getKijiSession();
+  const idToLabel = await getKijiLabels();
+  const clsId = tokenizerIds(tokenizer("[CLS]", { add_special_tokens: false }))[0];
+  const sepId = tokenizerIds(tokenizer("[SEP]", { add_special_tokens: false }))[0];
 
-  for (const word of prompt) {
-    const ids = tokenizerIds(tokenizer(word, { add_special_tokens: false }));
-    inputIds.push(...ids);
-    wordsMask.push(...ids.map(() => 0));
-  }
-
+  const inputIds = [clsId];
+  const wordTokenRanges = [];
   const usableWords = [];
+
   for (const word of words) {
     const ids = tokenizerIds(tokenizer(word.text, { add_special_tokens: false }));
-    // Leave room for the final [SEP] token and stay below the model's 384-word
-    // export limit. The model works on whole OCR words, not subword pieces.
-    if (inputIds.length + ids.length + 1 > 384) break;
-    usableWords.push(word);
+    if (inputIds.length + ids.length + 1 > 512) break;
+    const start = inputIds.length;
     inputIds.push(...ids);
-    wordsMask.push(...ids.map((_, index) => (index === 0 ? usableWords.length : 0)));
+    wordTokenRanges.push({ start, end: inputIds.length });
+    usableWords.push(word);
   }
+  inputIds.push(sepId);
 
-  inputIds.push(GLINER_END_TOKEN_ID);
-  wordsMask.push(0);
   const length = inputIds.length;
-  const ids = BigInt64Array.from(inputIds, BigInt);
-  const mask = BigInt64Array.from(wordsMask, BigInt);
-  const attention = BigInt64Array.from({ length }, () => 1n);
-
   const output = await session.run({
-    input_ids: new ort.Tensor("int64", ids, [1, length]),
-    attention_mask: new ort.Tensor("int64", attention, [1, length]),
-    words_mask: new ort.Tensor("int64", mask, [1, length]),
-    text_lengths: new ort.Tensor("int64", BigInt64Array.from([usableWords.length], BigInt), [1, 1]),
+    input_ids: new ort.Tensor(
+      "int64",
+      BigInt64Array.from(inputIds, BigInt),
+      [1, length]
+    ),
+    attention_mask: new ort.Tensor(
+      "int64",
+      BigInt64Array.from({ length }, () => 1n),
+      [1, length]
+    ),
   });
 
-  const logits = output.logits;
+  const logits = output.pii_logits;
   const dims = logits.dims;
   const data = logits.data;
-  if (!dims || dims.length !== 4 || dims[0] !== 1 || dims[3] !== 3) {
-    throw new Error(`Unexpected GLiNER output shape: ${dims}`);
+  if (!dims || dims.length !== 3 || dims[0] !== 1 || dims[2] !== 53) {
+    throw new Error(`Unexpected Kiji PII output shape: ${dims}`);
   }
 
-  const wordCount = Math.min(usableWords.length, dims[1]);
-  const labelCount = dims[2];
+  const classCount = dims[2];
   const threshold = 0.5;
-  const maxSpanWords = 12;
-  const sigmoid = (value) => 1 / (1 + Math.exp(-value));
-  const at = (word, label, marker) =>
-    sigmoid(data[((word * labelCount + label) * 3) + marker]);
-  const candidates = [];
+  const predictions = [];
 
-  // GLiNER token exports use three markers per label: start, end, inside.
-  for (let label = 0; label < labelCount; label++) {
-    for (let start = 0; start < wordCount; start++) {
-      if (at(start, label, 0) < threshold) continue;
-      for (let end = start; end < Math.min(wordCount, start + maxSpanWords); end++) {
-        if (at(end, label, 1) < threshold) continue;
-        const inside = usableWords.slice(start, end + 1).every((_, index) =>
-          at(start + index, label, 2) >= threshold
-        );
-        if (!inside) continue;
-
-        const score = Math.min(
-          at(start, label, 0),
-          at(end, label, 1),
-          ...usableWords.slice(start, end + 1).map((_, index) => at(start + index, label, 2))
-        );
-        candidates.push({ start, end, score });
+  // Collapse WordPiece predictions to one BIO label per OCR word. Prefer the
+  // strongest non-O subtoken so CITY, ZIP, EMAIL, etc. survive tokenization.
+  for (const range of wordTokenRanges) {
+    let best = { label: "O", score: 0 };
+    for (let token = range.start; token < range.end; token++) {
+      const row = [];
+      for (let cls = 0; cls < classCount; cls++) {
+        row.push(data[token * classCount + cls]);
+      }
+      const probabilities = softmax(row);
+      for (let cls = 1; cls < classCount; cls++) {
+        if (probabilities[cls] > best.score) {
+          best = {
+            label: idToLabel[String(cls)] || "O",
+            score: probabilities[cls],
+          };
+        }
       }
     }
+    predictions.push(best.score >= threshold ? best : { label: "O", score: best.score });
   }
 
-  // Match GLiNER's flat-NER behavior: retain the highest-confidence
-  // non-overlapping spans rather than black-boxing every candidate.
-  candidates.sort((a, b) => b.score - a.score);
-  const selected = [];
-  for (const candidate of candidates) {
-    if (selected.some((other) => candidate.start <= other.end && other.start <= candidate.end)) {
+  const regions = [];
+  let active = null;
+  const flush = () => {
+    if (!active) return;
+    const selectedWords = usableWords.slice(active.start, active.end + 1);
+    regions.push([
+      Math.min(...selectedWords.map((w) => w.bbox.x0)),
+      Math.min(...selectedWords.map((w) => w.bbox.y0)),
+      Math.max(...selectedWords.map((w) => w.bbox.x1)),
+      Math.max(...selectedWords.map((w) => w.bbox.y1)),
+    ]);
+    active = null;
+  };
+
+  for (let index = 0; index < predictions.length; index++) {
+    const prediction = predictions[index];
+    const match = /^(B|I)-(.+)$/.exec(prediction.label);
+    if (!match) {
+      flush();
       continue;
     }
-    selected.push(candidate);
-  }
 
-  return selected
-    .sort((a, b) => a.start - b.start)
-    .map(({ start, end }) => [
-      Math.min(...usableWords.slice(start, end + 1).map((w) => w.bbox.x0)),
-      Math.min(...usableWords.slice(start, end + 1).map((w) => w.bbox.y0)),
-      Math.max(...usableWords.slice(start, end + 1).map((w) => w.bbox.x1)),
-      Math.max(...usableWords.slice(start, end + 1).map((w) => w.bbox.y1)),
-    ]);
+    const [, prefix, type] = match;
+    if (
+      prefix === "B" ||
+      !active ||
+      active.type !== type ||
+      index !== active.end + 1
+    ) {
+      flush();
+      active = { start: index, end: index, type };
+    } else {
+      active.end = index;
+    }
+  }
+  flush();
+  return regions;
 }
 
 async function findPiiRegions(imageUrl, origW, origH) {
@@ -331,15 +357,15 @@ async function findPiiRegions(imageUrl, origW, origH) {
   const result = await worker.recognize(imageUrl);
   const words = result.data.words || [];
 
-  reportProgress(75, "Running PII model...");
+  reportProgress(75, "Running Kiji PII model...");
   let regions = [];
   try {
-    regions = await detectGlinerPii(words);
-    console.log(`GLiNER regions found: ${regions.length}`);
+    regions = await detectKijiPii(words);
+    console.log(`Kiji PII regions found: ${regions.length}`);
   } catch (error) {
     // Regex/label checks below remain the fallback if the model assets or
     // tokenizer are unavailable.
-    console.warn("GLiNER inference unavailable:", error);
+    console.warn("Kiji PII inference unavailable:", error);
   }
 
   // Second pass: deterministic regex and contextual label checks.

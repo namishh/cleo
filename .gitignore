@@ -17,8 +17,8 @@
 
 !extension/models
 !extension/models/*.onnx
-!extension/models/gliner-tokenizer
-!extension/models/gliner-tokenizer/*
+!extension/models/kiji-tokenizer
+!extension/models/kiji-tokenizer/*
 
 !.gitignore
 !.gitattributes
