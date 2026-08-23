@@ -297,6 +297,7 @@ async function redactImage(imageUrl, targetName) {
   };
 }
 
+// Register message listener immediately.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "processScreenshot") {
     redactImage(request.imageUrl, request.targetName)
@@ -305,3 +306,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
+// Signal that the offscreen document is loaded and listening.
+(async function signalReady() {
+  while (typeof ort === "undefined" || typeof Tesseract === "undefined") {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  console.log("Offscreen libraries loaded, sending ready signal");
+  chrome.runtime.sendMessage({ action: "offscreenReady" }).catch(() => {});
+})();

@@ -6,38 +6,62 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) 
   console.error("Failed to set side panel behavior:", err);
 });
 
-let creatingOffscreen;
-async function setupOffscreenDocument(path) {
-  if (await hasDocument()) return;
-  if (creatingOffscreen) {
-    await creatingOffscreen;
-  } else {
-    creatingOffscreen = chrome.offscreen.createDocument({
-      url: path,
-      reasons: ["WORKERS", "USER_MEDIA", "DOM_PARSER"],
-      justification: "Run ONNX face detection and OCR redaction on screenshots",
-    });
-    await creatingOffscreen;
-    creatingOffscreen = null;
-  }
-}
-
-async function hasDocument() {
-  const matchedClients = await self.clients.matchAll();
-  for (const client of matchedClients) {
-    if (client.url.endsWith(chrome.runtime.getURL("offscreen.html"))) {
-      return true;
-    }
-  }
-  return false;
-}
+let offscreenReadyPromise = null;
+let offscreenResolve = null;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "redactScreenshot") {
     handleRedaction().then(sendResponse).catch((err) => sendResponse({ error: err.message }));
     return true;
   }
+
+  if (request.action === "offscreenReady") {
+    if (offscreenResolve) offscreenResolve();
+    sendResponse({ ok: true });
+    return false;
+  }
 });
+
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) {
+    if (!offscreenReadyPromise) {
+      offscreenReadyPromise = Promise.resolve();
+    }
+    return offscreenReadyPromise;
+  }
+
+  if (offscreenReadyPromise) {
+    return offscreenReadyPromise;
+  }
+
+  offscreenReadyPromise = new Promise((resolve, reject) => {
+    offscreenResolve = resolve;
+    // Fail fast if offscreen never reports ready.
+    setTimeout(() => reject(new Error("Offscreen document failed to become ready")), 10000);
+  });
+
+  console.log("Creating offscreen document...");
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["WORKERS", "DOM_PARSER"],
+    justification: "Run ONNX face detection and OCR redaction on screenshots",
+  });
+
+  await offscreenReadyPromise;
+  console.log("Offscreen document ready");
+  offscreenResolve = null;
+}
+
+async function hasOffscreenDocument() {
+  try {
+    const matchedClients = await self.clients.matchAll();
+    return matchedClients.some((client) =>
+      client.url.includes(chrome.runtime.getURL("offscreen.html"))
+    );
+  } catch (e) {
+    return false;
+  }
+}
 
 async function handleRedaction() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -47,7 +71,7 @@ async function handleRedaction() {
     format: "png",
   });
 
-  await setupOffscreenDocument("offscreen.html");
+  await ensureOffscreenDocument();
 
   const result = await chrome.runtime.sendMessage({
     action: "processScreenshot",
@@ -57,16 +81,11 @@ async function handleRedaction() {
 
   if (result?.error) throw new Error(result.error);
 
-  const blob = await fetch(result.redactedImageUrl).then((r) => r.blob());
-  const arrayBuffer = await blob.arrayBuffer();
-
-  const filename = result.targetName;
-  const url = URL.createObjectURL(new Blob([arrayBuffer], { type: "image/png" }));
   await chrome.downloads.download({
-    url,
-    filename,
+    url: result.redactedImageUrl,
+    filename: result.targetName,
     saveAs: false,
   });
 
-  return { filename };
+  return { filename: result.targetName };
 }
