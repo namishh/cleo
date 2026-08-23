@@ -14,9 +14,6 @@
     "downloads"
   ],
   "host_permissions": ["<all_urls>"],
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
-  },
   "side_panel": {
     "default_path": "sidepanel.html"
   },
@@ -48,5 +45,8 @@
       "resources": ["models/*", "lib/*", "tessdata/*"],
       "matches": ["<all_urls>"]
     }
-  ]
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; object-src 'self';"
+  }
 }

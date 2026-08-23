@@ -32,6 +32,10 @@ let tesseractWorker = null;
 
 // Tell onnxruntime-web where to find the WASM binaries.
 ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
+// Use single-threaded WASM so onnxruntime loads .wasm directly instead of
+// dynamically importing .mjs worker modules (which MV3 extension pages cannot
+// load reliably).
+ort.env.wasm.numThreads = 1;
 
 function reportProgress(percent, message) {
   chrome.runtime
