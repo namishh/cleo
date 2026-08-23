@@ -30,6 +30,16 @@ function reportLoopStatus(message, skipped = false) {
     .catch(() => {});
 }
 
+// If the debugger detaches (e.g. user dismisses the infobar or closes the
+// tab), stop the loop cleanly instead of erroring every tick.
+chrome.debugger.onDetach.addListener((source) => {
+  if (loopState.running && source.tabId === loopState.tabId) {
+    console.warn("Debugger detached from pinned tab, stopping loop");
+    loopState.debuggerAttached = false;
+    stopLoop();
+  }
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startLoop") {
     startLoop()
@@ -201,11 +211,29 @@ function formatA11yTree(nodes) {
   return lines.join("\n");
 }
 
+async function ensureDebuggerAttached(tabId) {
+  try {
+    const targets = await chrome.debugger.getTargets();
+    const attached = targets.some((t) => t.tabId === tabId && t.attached);
+    if (!attached) {
+      await chrome.debugger.attach({ tabId }, "1.3");
+      loopState.debuggerAttached = true;
+    } else {
+      loopState.debuggerAttached = true;
+    }
+  } catch (err) {
+    // Already attached (e.g. from a previous run) is fine.
+    if (!String(err.message).includes("Another debugger")) throw err;
+    loopState.debuggerAttached = true;
+  }
+}
+
 async function captureA11yTree(tabId) {
   try {
+    await ensureDebuggerAttached(tabId);
     const result = await chrome.debugger.sendCommand(
       { tabId },
-      "Accessibility.getAccessibilityTree",
+      "Accessibility.getFullAXTree",
       {}
     );
     const treeText = formatA11yTree(result.nodes || []);
@@ -250,7 +278,7 @@ async function runOnce() {
     );
 
     // Extract and display the accessibility tree for this page state.
-    await captureA11yTree(loopState.tabId);
+    await captureA11yTree(tab.id);
   } catch (err) {
     console.error("Loop iteration failed:", err);
     reportLoopStatus(`Error: ${err.message}`);
