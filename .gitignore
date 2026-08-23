@@ -14,6 +14,7 @@
 
 !.gitignore
 !.gitattributes
+.DS_Store
 
 !backend
 !backend/main.py
