@@ -455,6 +455,45 @@ function groupRowLabels(words, rowTol = 20, maxGap = 40) {
   return groups;
 }
 
+// Merge overlapping/nearby rectangles into clean union boxes so the same PII
+// found by multiple passes (model + regex + DOM) draws as one solid block.
+function mergeBoxes(boxes, gap = 6) {
+  const rects = boxes
+    .map(([x1, y1, x2, y2]) => ({
+      x1: Math.min(x1, x2),
+      y1: Math.min(y1, y2),
+      x2: Math.max(x1, x2),
+      y2: Math.max(y1, y2),
+    }))
+    .filter((r) => r.x2 > r.x1 && r.y2 > r.y1);
+
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < rects.length && !merged; i++) {
+      for (let j = i + 1; j < rects.length && !merged; j++) {
+        const a = rects[i];
+        const b = rects[j];
+        const overlapX = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+        const overlapY = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+        // Merge when the boxes intersect, or sit on the same text line /
+        // column within `gap` pixels of each other.
+        if (overlapX > -gap && overlapY > -gap) {
+          rects[i] = {
+            x1: Math.min(a.x1, b.x1),
+            y1: Math.min(a.y1, b.y1),
+            x2: Math.max(a.x2, b.x2),
+            y2: Math.max(a.y2, b.y2),
+          };
+          rects.splice(j, 1);
+          merged = true;
+        }
+      }
+    }
+  }
+  return rects.map((r) => [r.x1, r.y1, r.x2, r.y2]);
+}
+
 function findValueToRightOfBox(labelBox, words, rowTol = 20, maxGap = 700) {
   const labelCy = (labelBox.y0 + labelBox.y1) / 2;
   const candidates = words.filter((w) => {
@@ -524,8 +563,18 @@ async function redactImage(
   console.log(`PII regions found: ${piiRegions.length}`);
 
   reportProgress(85, "Applying redactions...");
+  const pad = 2;
+  const textBoxes = mergeBoxes([...piiRegions, ...domRegions], 6).map(
+    ([x1, y1, x2, y2]) => [
+      Math.max(0, x1 - pad),
+      Math.max(0, y1 - pad),
+      Math.min(origW, x2 + pad),
+      Math.min(origH, y2 + pad),
+    ]
+  );
+
   ctx.fillStyle = "black";
-  for (const [x1, y1, x2, y2] of [...faceBoxes, ...piiRegions, ...domRegions]) {
+  for (const [x1, y1, x2, y2] of [...faceBoxes, ...textBoxes]) {
     ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
   }
 
