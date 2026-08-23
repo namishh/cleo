@@ -164,8 +164,8 @@ function textLooksSensitive(text) {
     EMAIL_RE.test(text) ||
     PHONE_RE.test(text) ||
     DATE_RE.test(text) ||
-    ADDRESS_CONTEXT_RE.test(text) ||
-    ((LOCATION_CONTEXT_RE.test(text)) && (PINCODE_RE.test(text) || ZIP_RE.test(text))) ||
+    ((LOCATION_CONTEXT_RE.test(text) || ADDRESS_CONTEXT_RE.test(text)) &&
+      (PINCODE_RE.test(text) || ZIP_RE.test(text))) ||
     /(?:pincode|pin code|postal code|postcode|zip code)\D{0,24}\d{5,6}/i.test(text)
   );
 }
@@ -174,17 +174,20 @@ function privacyElementForTextNode(textNode) {
   const rawText = normalize(textNode.nodeValue, 500);
   if (!rawText) return null;
 
+  // Only the text node itself (plus a tiny ancestor window) may be masked.
+  // Walking far up the tree made any page containing one sensitive word
+  // (e.g. "address" in a nav link) redact its entire header.
+  const directMatch = textLooksSensitive(rawText);
+  if (!directMatch) return null;
+
   let element = textNode.parentElement;
-  for (let depth = 0; element && depth < 5; depth++, element = element.parentElement) {
+  for (let depth = 0; element && depth < 2; depth++, element = element.parentElement) {
     if (!isVisible(element)) continue;
     const combinedText = normalize(element.innerText || element.textContent, 500);
-    const directMatch = textLooksSensitive(rawText);
-    const contextualMatch = textLooksSensitive(combinedText);
+    if (!textLooksSensitive(combinedText) || combinedText.length > 300) continue;
 
-    if ((directMatch || contextualMatch) && combinedText.length <= 500) {
-      const rect = rectFor(element);
-      if (rect.width > 0 && rect.height > 0) return rect;
-    }
+    const rect = rectFor(element);
+    if (rect.width > 0 && rect.height > 0) return rect;
   }
   return null;
 }
