@@ -318,7 +318,7 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
     statusEl.textContent = `error: ${response.error}`;
     return;
   }
-  clearStream();
+  renderChat(response.chat);
   refreshChatList();
   input.focus();
 });

@@ -35,10 +35,12 @@ async function loadAllChats() {
 
   // Migrate records saved under invalid keys or missing ids (legacy bug that
   // stored a chat under the literal key "undefined").
+  let migrated = false;
   for (const key of Object.keys(chats)) {
     const chat = chats[key];
     if (key === "undefined" || !chat?.id) {
       delete chats[key];
+      migrated = true;
       if (chat && typeof chat === "object") {
         chat.id = `chat_${chat.createdAt || Date.now()}_migrated`;
         chat.entries ||= [];
@@ -50,6 +52,7 @@ async function loadAllChats() {
       }
     }
   }
+  if (migrated) await chrome.storage.local.set({ [CHATS_KEY]: chats });
   return chats;
 }
 
@@ -121,7 +124,7 @@ async function appendEntry(chatId, entry) {
   await saveChat(chat);
 }
 
-// ponytail: title = first 12 chars of the first message
+// ponytail: title = first 4 words of the first message
 function titleFromMessage(text) {
   const words = String(text).trim().replace(/\s+/g, " ").split(" ");
   return words.slice(0, 4).join(" ");
@@ -151,12 +154,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "newChat") {
     if (taskState.running) {
       sendResponse({ error: "stop the agent first" });
-    } else {
-      currentChatId = null;
-      chrome.storage.local.remove(ACTIVE_CHAT_KEY);
-      sendResponse({ ok: true });
+      return false;
     }
-    return false;
+    (async () => {
+      const chat = await newChatRecord();
+      await saveChat(chat);
+      await setActiveChatId(chat.id);
+      sendResponse({ ok: true, chat });
+    })().catch((error) => sendResponse({ error: error.message }));
+    return true;
   }
 
   if (request.action === "listChats") {
@@ -253,14 +259,10 @@ async function startTask(task) {
   // Continue the active chat if one exists; otherwise start a new one.
   // getActiveChatId may point to a chat that was deleted in another window,
   // so treat any failure as "no active chat".
-  let chat = null;
-  try {
-    chat = await (await getActiveChatId()) ? await loadChat(await getActiveChatId()) : null;
-  } catch {
-    chat = null;
-  }
+  const activeId = await getActiveChatId();
+  let chat = activeId ? await loadChat(activeId) : null;
   if (!chat) {
-    chat = newChatRecord();
+    chat = await newChatRecord();
     await setActiveChatId(chat.id);
   }
   chat.entries ||= [];
