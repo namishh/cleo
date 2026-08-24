@@ -197,7 +197,18 @@ function clearStream() {
   streamEl.textContent = "";
 }
 
-// ---------- chat list ----------
+// ---------- chat sidebar ----------
+
+const chatsSidebar = document.getElementById("chats-sidebar");
+
+document.getElementById("sidebar-toggle-btn").addEventListener("click", async () => {
+  chatsSidebar.classList.toggle("open");
+  if (chatsSidebar.classList.contains("open")) refreshChatList();
+});
+
+document.getElementById("close-sidebar-btn").addEventListener("click", () => {
+  chatsSidebar.classList.remove("open");
+});
 
 async function refreshChatList() {
   const response = await chrome.runtime.sendMessage({ action: "listChats" });
@@ -247,7 +258,7 @@ async function openChat(id) {
     statusEl.textContent = `error: ${response.error}`;
     return;
   }
-  document.querySelector(".chats-menu").removeAttribute("open");
+  chatsSidebar.classList.remove("open");
   renderChat(response.chat);
   refreshChatList();
 }
@@ -308,16 +319,11 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
   input.focus();
 });
 
-// Refresh the list every time the dropdown opens, close it on outside clicks.
-const chatsMenu = document.querySelector(".chats-menu");
-chatsMenu.addEventListener("toggle", () => {
-  if (chatsMenu.open) refreshChatList();
+// Refresh the list every time the sidebar opens.
+const observer = new MutationObserver(() => {
+  if (chatsSidebar.classList.contains("open")) refreshChatList();
 });
-document.addEventListener("click", (event) => {
-  if (chatsMenu.open && !chatsMenu.contains(event.target)) {
-    chatsMenu.removeAttribute("open");
-  }
-});
+observer.observe(chatsSidebar, { attributes: true, attributeFilter: ["class"] });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "agentEvent") {

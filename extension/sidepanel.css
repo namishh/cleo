@@ -57,7 +57,7 @@ body {
   color: var(--dim);
 }
 
-/* topbar + chat list */
+/* topbar + collapsible chat sidebar */
 .topbar {
   display: flex;
   align-items: center;
@@ -70,8 +70,7 @@ body {
   font-weight: 700;
 }
 
-.topbar button,
-.chats-menu summary {
+.topbar button {
   padding: 2px 8px;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -80,33 +79,68 @@ body {
   font-size: 11px;
   cursor: pointer;
   user-select: none;
-  list-style: none;
 }
 
-.topbar button:hover,
-.chats-menu summary:hover {
+.topbar button:hover {
   color: var(--fg);
 }
 
-.chats-menu {
-  position: relative;
+.chats-sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 230px;
+  display: none;
+  flex-direction: column;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  z-index: 50;
 }
 
-.chats-menu[open] .chat-list {
-  display: block;
+.chats-sidebar.open {
+  display: flex;
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+}
+
+.sidebar-head button {
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-head button:hover {
+  color: var(--fg);
+}
+
+.new-chat {
+  margin: 10px 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-chat:hover {
+  background: var(--surface);
 }
 
 .chat-list {
-  display: none;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-  width: 240px;
-  max-height: 320px;
+  flex: 1;
   overflow-y: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  z-index: 10;
 }
 
 .chat-item {
@@ -114,18 +148,18 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 6px 8px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
 
 .chat-item:hover {
-  background: #1a1a1a;
+  background: var(--surface);
 }
 
 .chat-item.active {
+  background: var(--surface);
   color: var(--fg);
-  background: #1a1a1a;
 }
 
 .chat-item .chat-title {

@@ -8,13 +8,17 @@
   </head>
   <body>
     <main class="chat">
+      <aside id="chats-sidebar" class="chats-sidebar">
+        <div class="sidebar-head">
+          <span>chats</span>
+          <button id="close-sidebar-btn" type="button">x</button>
+        </div>
+        <button id="new-chat-btn" type="button" class="new-chat">+ new chat</button>
+        <div id="chat-list" class="chat-list"></div>
+      </aside>
       <header class="topbar">
+        <button id="sidebar-toggle-btn" type="button">=</button>
         <span class="brand">cleo</span>
-        <button id="new-chat-btn" type="button">new</button>
-        <details class="chats-menu">
-          <summary>chats</summary>
-          <div id="chat-list" class="chat-list"></div>
-        </details>
       </header>
       <div id="stream" class="stream">
         <div class="empty">send a task to begin</div>
