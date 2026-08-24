@@ -333,3 +333,5 @@ async function executeActions(tabId, actions) {
   }
   return results;
 }
+
+export { executeActions, executeAction, isActionType };
