@@ -144,10 +144,22 @@ function isDebuggerDetachedError(error) {
 }
 
 async function captureTab(tabId) {
+  // Visible tabs: surface capture is best. Background tabs are not composited,
+  // so the surface is missing/stale — fall back to the renderer capture.
+  try {
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      "Page.captureScreenshot",
+      { format: "png", fromSurface: true }
+    );
+    if (result.data) return `data:image/png;base64,${result.data}`;
+  } catch (error) {
+    console.warn(`Surface capture failed for tab ${tabId}, trying renderer:`, error.message);
+  }
   const result = await chrome.debugger.sendCommand(
     { tabId },
     "Page.captureScreenshot",
-    { format: "png", fromSurface: true }
+    { format: "png", fromSurface: false }
   );
   return `data:image/png;base64,${result.data}`;
 }
@@ -341,7 +353,11 @@ async function runTaskLoop(chatId) {
       log(chatId, `Step ${step}: ${state.scrollRun} consecutive scrolls; nudging model to conclude`);
     }
 
-    const screenshot = await captureTab(tabId);
+    const screenshot = await captureTabWithRetry(tabId);
+    if (!screenshot) {
+      stopTask(chatId, "Stopped: screenshot capture kept failing");
+      return;
+    }
     await ensureOffscreenDocument();
     status(chatId, `Step ${step}: redacting screenshot...`);
 
@@ -590,6 +606,20 @@ async function askBackendStream(payload, onDelta) {
   return result;
 }
 
+async function captureTabWithRetry(tabId, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await captureTab(tabId);
+    } catch (error) {
+      lastError = error;
+      console.warn(`Screenshot attempt ${attempt}/${attempts} failed for tab ${tabId}:`, error.message);
+      await sleep(500 * attempt);
+    }
+  }
+  throw lastError;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -609,6 +639,15 @@ function titleFromMessage(text) {
 }
 
 // ---------- message routing ----------
+
+chrome.debugger.onDetach.addListener((source) => {
+  // If the user dismisses the debugging infobar or closes the tab, Chrome
+  // detaches the session. Stop that chat cleanly instead of erroring forever.
+  const chatId = source?.tabId;
+  if (chatId && taskStates.get(chatId)?.running) {
+    stopTask(chatId, "Stopped: debugger detached");
+  }
+});
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startTask") {
