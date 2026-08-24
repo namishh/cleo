@@ -1,8 +1,7 @@
-import { AutoTokenizer } from "./lib/transformers.min.js";
+import { PreTrainedTokenizer } from "./lib/transformers.min.js";
 
 const FACE_MODEL_URL = chrome.runtime.getURL("models/yunet_fact_detection_may_2026.onnx");
 const KIJI_MODEL_URL = chrome.runtime.getURL("models/kiji-pii-model.onnx");
-const KIJI_TOKENIZER_URL = chrome.runtime.getURL("models/kiji-tokenizer");
 const FACE_INPUT_W = 640;
 const FACE_INPUT_H = 480;
 const FACE_SCORE_THRESH = 0.3;
@@ -77,9 +76,22 @@ async function getKijiSession() {
 async function getKijiTokenizer() {
   if (!kijiTokenizer) {
     reportProgress(76, "Loading Kiji tokenizer...");
-    kijiTokenizer = await AutoTokenizer.from_pretrained(KIJI_TOKENIZER_URL);
+    // transformers.js cannot resolve chrome-extension:// URLs as model paths
+    // (it treats them as HuggingFace model IDs), so fetch the tokenizer files
+    // explicitly and construct the tokenizer from their JSON.
+    const [tokenizerJSON, tokenizerConfig] = await Promise.all([
+      fetchJson("models/kiji-tokenizer/tokenizer.json"),
+      fetchJson("models/kiji-tokenizer/tokenizer_config.json"),
+    ]);
+    kijiTokenizer = await PreTrainedTokenizer.from_pretrained(tokenizerJSON, tokenizerConfig);
   }
   return kijiTokenizer;
+}
+
+async function fetchJson(path) {
+  const response = await fetch(chrome.runtime.getURL(path));
+  if (!response.ok) throw new Error(`Failed to load ${path}: ${response.status}`);
+  return response.json();
 }
 
 async function getKijiLabels() {
