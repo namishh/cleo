@@ -118,6 +118,13 @@ const MODIFIER_FLAGS = {
   Shift: 8,
 };
 
+const MODIFIER_KEYS = {
+  Alt: { code: "AltLeft", keyCode: 18 },
+  Control: { code: "ControlLeft", keyCode: 17 },
+  Meta: { code: "MetaLeft", keyCode: 91 },
+  Shift: { code: "ShiftLeft", keyCode: 16 },
+};
+
 function parseKeyCombo(combo) {
   const parts = String(combo).split("+").map((part) => part.trim()).filter(Boolean);
   let modifiers = 0;
@@ -136,66 +143,68 @@ function parseKeyCombo(combo) {
 async function actionKey(tabId, action) {
   if (!action.key) throw new Error("key requires a key name");
   const { modifiers, main } = parseKeyCombo(action.key);
-
-  if (main.length === 1 && !action.key.includes("+")) {
-    // Printable character: full down/char/up sequence.
-    const base = { modifiers, text: main, unmodifiedText: main };
-    await send(tabId, "Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key: main,
-      windowsVirtualKeyCode: main.toUpperCase().charCodeAt(0),
-      nativeVirtualKeyCode: main.toUpperCase().charCodeAt(0),
-      ...base,
-    });
-    await send(tabId, "Input.dispatchKeyEvent", { type: "keyUp", key: main, windowsVirtualKeyCode: main.toUpperCase().charCodeAt(0) });
-    return `pressed "${main}"`;
-  }
-
-  const special = SPECIAL_KEY_CODES[main];
-  if (!special) throw new Error(`unsupported key: "${main}"`);
-
-  // Modifier key downs first (Ctrl+a etc.), then the key, then modifier ups.
   const modifierKeys = String(action.key)
     .split("+")
     .map((part) => part.trim())
     .filter((part) => part in MODIFIER_FLAGS);
 
   for (const modifier of modifierKeys) {
+    const info = MODIFIER_KEYS[modifier];
     await send(tabId, "Input.dispatchKeyEvent", {
-      type: "keyDown",
+      type: "rawKeyDown",
       key: modifier,
-      modifiers,
-      windowsVirtualKeyCode: MODIFIER_FLAGS[modifier] + 111, // CDP convention
+      code: info.code,
+      modifiers: 0,
+      windowsVirtualKeyCode: info.keyCode,
+      nativeVirtualKeyCode: info.keyCode,
     });
   }
 
-  await send(tabId, "Input.dispatchKeyEvent", {
-    type: main === "Enter" || main === "Space" ? "keyDown" : "rawKeyDown",
-    ...special,
-    modifiers,
-  });
-  if (main === "Enter" || main === "Space") {
+  if (main.length === 1) {
+    // Printable characters work both alone and in combinations such as
+    // Control+a / Meta+c.
+    const keyCode = main.toUpperCase().charCodeAt(0);
+    await send(tabId, "Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: main,
+      code: /^\d$/.test(main) ? `Digit${main}` : `Key${main.toUpperCase()}`,
+      modifiers,
+      text: main,
+      unmodifiedText: main,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    });
+    await send(tabId, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: main,
+      modifiers,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+    });
+  } else {
+    const special = SPECIAL_KEY_CODES[main];
+    if (!special) throw new Error(`unsupported key: "${main}"`);
+    await send(tabId, "Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      ...special,
+      modifiers,
+    });
     await send(tabId, "Input.dispatchKeyEvent", {
       type: "keyUp",
       ...special,
       modifiers,
     });
-  } else {
-    await send(tabId, "Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key: special.key,
-      code: special.code,
-      windowsVirtualKeyCode: special.windowsVirtualKeyCode,
-      modifiers,
-    });
   }
 
   for (const modifier of modifierKeys.reverse()) {
+    const info = MODIFIER_KEYS[modifier];
     await send(tabId, "Input.dispatchKeyEvent", {
       type: "keyUp",
       key: modifier,
+      code: info.code,
       modifiers: 0,
-      windowsVirtualKeyCode: MODIFIER_FLAGS[modifier] + 111,
+      windowsVirtualKeyCode: info.keyCode,
+      nativeVirtualKeyCode: info.keyCode,
     });
   }
   return `pressed ${action.key}`;

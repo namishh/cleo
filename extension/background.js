@@ -222,12 +222,22 @@ async function ensureDebuggerAttached(tabId) {
     const attached = targets.some((t) => t.tabId === tabId && t.attached);
     if (!attached) {
       await chrome.debugger.attach({ tabId }, "1.3");
-      loopState.debuggerAttached = tabId === loopState.tabId;
     }
+    if (tabId === loopState.tabId) loopState.debuggerAttached = true;
   } catch (err) {
     // Already attached (e.g. from a previous run) is fine.
     if (!String(err.message).includes("Another debugger")) throw err;
   }
+}
+
+async function forceDebuggerAttach(tabId) {
+  await chrome.debugger.detach({ tabId }).catch(() => {});
+  await chrome.debugger.attach({ tabId }, "1.3");
+  if (tabId === loopState.tabId) loopState.debuggerAttached = true;
+}
+
+function isDebuggerDetachedError(error) {
+  return String(error?.message || error).toLowerCase().includes("debugger is not attached");
 }
 
 // Execute a batch of backend actions on the given tab. Attaches the debugger
@@ -242,7 +252,11 @@ async function executeActionBatch(tabId, actions) {
     tabId = tab.id;
   }
   await ensureDebuggerAttached(tabId);
-  const results = await executeActions(tabId, actions);
+  let results = await executeActions(tabId, actions);
+  if (results.some((result) => !result.ok && isDebuggerDetachedError(result.error))) {
+    await forceDebuggerAttach(tabId);
+    results = await executeActions(tabId, actions);
+  }
   // Leave the debugger attached briefly so follow-up test actions stay fast;
   // detach when idle so the infobar goes away.
   scheduleDebuggerDetach(tabId);
@@ -299,8 +313,7 @@ async function startClickLoop(x, y) {
         reportClickLoop("click loop: debugger dropped, re-attaching...");
         // Per-action errors never reach the catch below, so handle them here:
         // drop any stale session, attach fresh, and retry once.
-        await chrome.debugger.detach({ tabId: clickLoop.tabId }).catch(() => {});
-        await chrome.debugger.attach({ tabId: clickLoop.tabId }, "1.3");
+        await forceDebuggerAttach(clickLoop.tabId);
         const retry = await executeActions(clickLoop.tabId, clickAction);
         const retryResult = retry[0];
         reportClickLoop(retryResult.ok ? `click OK after re-attach (${x}, ${y})` : `click FAILED after re-attach: ${retryResult.error}`);
