@@ -260,6 +260,7 @@ async function startTask(task, requestedChatId) {
     scrollRun: 0,
   };
   taskStates.set(targetChat.id, state);
+  updateKeepalive();
 
   targetChat.entries.push({ t: "user", text: state.task, ts: Date.now() });
   if (!targetChat.customTitle) {
@@ -278,11 +279,28 @@ async function startTask(task, requestedChatId) {
   return { chatId: targetChat.id, tabId: tab.id };
 }
 
+// ---------- keepalive (tasks outlive the side panel) ----------
+// The loop lives in this service worker, so closing the sidebar is fine. But
+// MV3 kills idle workers after ~30s; long backend waits can trigger that.
+// Poke an extension API periodically while any chat is running.
+let keepaliveTimer = null;
+
+function updateKeepalive() {
+  const anyRunning = [...taskStates.values()].some((s) => s.running);
+  if (anyRunning && !keepaliveTimer) {
+    keepaliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
+  } else if (!anyRunning && keepaliveTimer) {
+    clearInterval(keepaliveTimer);
+    keepaliveTimer = null;
+  }
+}
+
 function stopTask(chatId, reason = "Stopped") {
   const state = taskStates.get(chatId);
   if (!state?.running) return;
   state.running = false;
   taskStates.delete(chatId);
+  updateKeepalive();
 
   chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
   log(chatId, reason);
