@@ -1,3 +1,5 @@
+import { executeActions } from "./actions.js";
+
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.log(`Browser Agent Sidebar installed. Reason: ${reason}`);
 });
@@ -57,6 +59,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "getLoopState") {
     sendResponse({ running: loopState.running, tabId: loopState.tabId });
     return false;
+  }
+
+  if (request.action === "executeActions") {
+    executeActionBatch(request.tabId, request.actions)
+      .then((results) => sendResponse({ results }))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
   }
 
   if (request.action === "offscreenReady") {
@@ -190,6 +199,35 @@ async function getCompactPageSnapshot(tabId) {
     if (snapshot?.error) throw new Error(snapshot.error);
     return snapshot;
   }
+}
+
+// Execute a batch of backend actions on the given tab. Attaches the debugger
+// if the loop isn't running so test buttons work standalone.
+async function executeActionBatch(tabId, actions) {
+  if (!Array.isArray(actions) || actions.length === 0) {
+    throw new Error("actions must be a non-empty array");
+  }
+  if (!tabId) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error("No active tab");
+    tabId = tab.id;
+  }
+  await ensureDebuggerAttached(tabId);
+  const results = await executeActions(tabId, actions);
+  // Leave the debugger attached briefly so follow-up test actions stay fast;
+  // detach when idle so the infobar goes away.
+  scheduleDebuggerDetach(tabId);
+  return results;
+}
+
+let detachTimer = null;
+function scheduleDebuggerDetach(tabId) {
+  if (loopState.running) return; // the loop manages its own attachment
+  if (detachTimer) clearTimeout(detachTimer);
+  detachTimer = setTimeout(() => {
+    chrome.debugger.detach({ tabId }).catch(() => {});
+    detachTimer = null;
+  }, 15000);
 }
 
 async function runOnce() {

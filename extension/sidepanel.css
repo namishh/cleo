@@ -89,6 +89,48 @@ h2 {
   margin: 16px 0 6px;
 }
 
+.action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.action-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.action-grid input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+}
+
+.text-input {
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+#action-buttons button {
+  padding: 7px 6px;
+  font-size: 12px;
+  background: #6b7280;
+}
+
+#action-buttons button:hover {
+  background: #4b5563;
+}
+
 .a11y-tree {
   margin: 0;
   padding: 10px;

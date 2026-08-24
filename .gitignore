@@ -26,3 +26,5 @@
 
 !backend
 !backend/main.py
+!backend/.env.sample
+!backend/pyproject.toml

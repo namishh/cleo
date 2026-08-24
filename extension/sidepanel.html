@@ -16,6 +16,31 @@
       <p id="progress-text" class="progress-text hidden">0%</p>
       <button id="toggle-btn" class="start">Start</button>
       <p class="hint">Captures & redacts the pinned tab every 5s while running.</p>
+      <h2>Action Tester</h2>
+      <div class="action-grid">
+        <label>x <input id="t-x" type="number" value="400" /></label>
+        <label>y <input id="t-y" type="number" value="300" /></label>
+        <label>x2 <input id="t-x2" type="number" value="600" /></label>
+        <label>y2 <input id="t-y2" type="number" value="450" /></label>
+      </div>
+      <input id="t-text" type="text" placeholder="text to type / option to select" class="text-input" />
+      <div class="action-grid" id="action-buttons">
+        <button data-action='click'>click</button>
+        <button data-action='double_click'>double_click</button>
+        <button data-action='right_click'>right_click</button>
+        <button data-action='move'>move</button>
+        <button data-action='scroll' data-extra='{"direction":"down","amount":3}'>scroll down</button>
+        <button data-action='scroll' data-extra='{"direction":"up","amount":3}'>scroll up</button>
+        <button data-action='type' data-needs-text>Type text</button>
+        <button data-action='key' data-extra='{"key":"Enter"}'>key Enter</button>
+        <button data-action='key' data-extra='{"key":"Tab"}'>key Tab</button>
+        <button data-action='key' data-extra='{"key":"Control+a"}'>key Ctrl+A</button>
+        <button data-action='drag'>drag</button>
+        <button data-action='select' data-needs-text>Select option</button>
+        <button data-action='navigate' data-needs-text data-text-placeholder="example.com">navigate</button>
+        <button data-action='wait' data-extra='{"ms":1000}'>wait 1s</button>
+      </div>
+      <pre id="action-log" class="a11y-tree">(action results appear here)</pre>
       <h2>Accessibility Tree</h2>
       <pre id="a11y-tree" class="a11y-tree">(run the agent to capture)</pre>
     </div>

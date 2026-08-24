@@ -36,6 +36,58 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   const a11yTreeEl = document.getElementById("a11y-tree");
+  const actionLog = document.getElementById("action-log");
+  const tX = document.getElementById("t-x");
+  const tY = document.getElementById("t-y");
+  const tX2 = document.getElementById("t-x2");
+  const tY2 = document.getElementById("t-y2");
+  const tText = document.getElementById("t-text");
+
+  function logAction(line) {
+    actionLog.textContent = `${new Date().toLocaleTimeString()} ${line}\n` + actionLog.textContent;
+  }
+
+  document.getElementById("action-buttons").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+
+    const type = button.dataset.action;
+    const action = { type };
+    if (button.dataset.extra) Object.assign(action, JSON.parse(button.dataset.extra));
+    if (button.hasAttribute("data-needs-text")) {
+      if (type === "type") action.text = tText.value;
+      if (type === "select") action.option = tText.value;
+      if (type === "navigate") action.url = tText.value || "example.com";
+    }
+    if (["click", "double_click", "right_click", "move", "scroll", "drag", "select"].includes(type)) {
+      action.x = Number(tX.value);
+      action.y = Number(tY.value);
+    }
+    if (type === "drag") {
+      action.x2 = Number(tX2.value);
+      action.y2 = Number(tY2.value);
+    }
+
+    button.disabled = true;
+    logAction(`${type} ...`);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "executeActions",
+        actions: [action],
+      });
+      if (response?.error) {
+        logAction(`${type} FAILED: ${response.error}`);
+      } else {
+        for (const result of response.results) {
+          logAction(result.ok ? `${type} OK: ${result.detail}` : `${type} FAILED: ${result.error}`);
+        }
+      }
+    } catch (err) {
+      logAction(`${type} FAILED: ${err.message}`);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "progress") {

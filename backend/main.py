@@ -24,6 +24,9 @@ import os
 
 from flask import Flask, jsonify, request
 from openrouter import OpenRouter
+import dotenv
+
+dotenv.load_dotenv()
 
 app = Flask(__name__)
 
