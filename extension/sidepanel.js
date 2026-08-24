@@ -201,7 +201,7 @@ function clearStream() {
 
 const chatsSidebar = document.getElementById("chats-sidebar");
 
-document.getElementById("sidebar-toggle-btn").addEventListener("click", async () => {
+document.getElementById("sidebar-toggle-btn").addEventListener("click", () => {
   chatsSidebar.classList.toggle("open");
   if (chatsSidebar.classList.contains("open")) refreshChatList();
 });
@@ -210,11 +210,15 @@ document.getElementById("close-sidebar-btn").addEventListener("click", () => {
   chatsSidebar.classList.remove("open");
 });
 
+let refreshSeq = 0;
 async function refreshChatList() {
+  const seq = ++refreshSeq;
   const response = await chrome.runtime.sendMessage({ action: "listChats" });
+  if (seq !== refreshSeq) return; // a newer refresh superseded this one
   const list = document.getElementById("chat-list");
   list.textContent = "";
   const active = await chrome.runtime.sendMessage({ action: "getActiveChat" });
+  if (seq !== refreshSeq) return;
   const activeId = active?.chat?.id || null;
 
   if (!response?.chats?.length) {
@@ -318,13 +322,6 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
   refreshChatList();
   input.focus();
 });
-
-// Refresh the list every time the sidebar opens.
-const observer = new MutationObserver(() => {
-  if (chatsSidebar.classList.contains("open")) refreshChatList();
-});
-observer.observe(chatsSidebar, { attributes: true, attributeFilter: ["class"] });
-
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "agentEvent") {
     switch (message.kind) {
