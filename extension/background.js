@@ -286,7 +286,24 @@ function stopTask(chatId, reason = "Stopped") {
 
   chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
   log(chatId, reason);
+  notifyDone(state.tabId, reason);
   chrome.runtime.sendMessage({ action: "taskStopped", chatId, reason }).catch(() => {});
+}
+
+// Notify when a background chat finishes — the user may be on another tab.
+async function notifyDone(tabId, message) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.active) return; // user is watching this tab; no notification needed
+  } catch {
+    // Tab is gone; still notify.
+  }
+  chrome.notifications.create({
+    type: "basic",
+    iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+    title: "Cleo",
+    message,
+  });
 }
 
 function stopAllTasks(reason = "Stopped") {

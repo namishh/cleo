@@ -13,7 +13,8 @@
     "offscreen",
     "downloads",
     "debugger",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "notifications"
   ],
   "host_permissions": ["<all_urls>"],
   "side_panel": {
