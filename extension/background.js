@@ -68,10 +68,20 @@ async function getActiveChatId() {
 }
 
 async function newChatRecord() {
-  const count = Object.keys(await loadAllChats()).length + 1;
+  // Persistent counter so titles never collide, even after failed runs.
+  const store = await chrome.storage.local.get("cleo_chatCounter");
+  const count = (store.cleo_chatCounter || 0) + 1;
+  await chrome.storage.local.set({ cleo_chatCounter: count });
+
+  const chats = await loadAllChats();
+  let title = `New Chat #${count}`;
+  if (Object.values(chats).some((chat) => chat.title === title)) {
+    title = `New Chat #${count}-${Math.random().toString(36).slice(2, 5)}`;
+  }
+
   return {
     id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    title: `New Chat #${count}`,
+    title,
     customTitle: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
