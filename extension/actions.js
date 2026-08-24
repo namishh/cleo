@@ -297,6 +297,49 @@ async function actionNavigate(tabId, action) {
   return `navigating to ${url}`;
 }
 
+async function actionBack(tabId) {
+  await chrome.tabs.goBack(tabId);
+  return "navigated back";
+}
+
+async function actionForward(tabId) {
+  await chrome.tabs.goForward(tabId);
+  return "navigated forward";
+}
+
+// Resolve a resource URL from a tree element (img/a/video/source) or use the
+// provided URL, then hand it to the browser's download manager. This skips
+// UI download buttons entirely.
+async function actionDownload(tabId, action) {
+  let url = action.url;
+  if (!url && action.id) {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      action: "getResourceUrl",
+      id: action.id,
+    });
+    if (response?.error) throw new Error(response.error);
+    url = response.url;
+  }
+  if (!url) throw new Error("download requires url or id");
+
+  const result = await chrome.downloads.download({
+    url,
+    filename: action.filename || undefined,
+    saveAs: false,
+  });
+  return `downloading ${url} (id ${result[0] ?? result})`;
+}
+
+// Exact page/element text — far more reliable than OCR for reading numbers.
+async function actionReadText(tabId, action) {
+  const response = await chrome.tabs.sendMessage(tabId, {
+    action: "getPageText",
+    id: action.id,
+  });
+  if (response?.error) throw new Error(response.error);
+  return String(response.text || "").slice(0, 6000);
+}
+
 async function actionWait(action) {
   const ms = Math.min(Math.max(Number(action.ms) || 500, 0), 10000);
   await new Promise((resolve) => setTimeout(resolve, ms));
@@ -314,8 +357,15 @@ const EXECUTORS = {
   drag: actionDrag,
   select: actionSelect,
   navigate: actionNavigate,
+  back: actionBack,
+  forward: actionForward,
+  download: actionDownload,
+  read_text: actionReadText,
   wait: actionWait,
 };
+
+// Actions that trigger a page load; the caller should let the page settle.
+const NAVIGATION_ACTIONS = new Set(["navigate", "back", "forward"]);
 
 // Terminal actions carry no runtime behaviour; they only end the loop.
 const TERMINAL_ACTIONS = new Set(["done", "fail"]);

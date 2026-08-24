@@ -46,6 +46,11 @@ ACTION_SPACE = {
     "drag": "Drag from one coordinate to another. Requires numeric x, y, x2, y2.",
     "select": "Select an <option> by visible text inside a <select> at coordinates. Requires x, y and option.",
     "navigate": "Open a URL in the pinned tab. Requires url.",
+    "back": "Go back to the previous page (e.g. return from a detail page to the results list).",
+    "forward": "Go forward one page.",
+    "remember": "Store one fact you read on the current page for the final summary. Requires fact. Use repeatedly while researching.",
+    "download": "Download a file directly without clicking any button. Requires id (element from the tree with src/href) or url. Optional filename.",
+    "read_text": "Read the page's visible text exactly (PII masked). Optional id to read a single element. Use this for reading numbers/values instead of relying on the screenshot.",
     "wait": "Wait N milliseconds for the page to settle. Requires ms.",
     "done": "The task is complete.",
     "fail": "The task cannot be completed; include a reason.",
@@ -69,6 +74,8 @@ Rules:
 - Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
 - Coordinates are in CSS pixels relative to the screenshot's top-left corner. Use the numbers inside @ (x,y,w,h) from the tree, e.g. click the center of an element.
 - Prefer an element id from the tree, e.g. {{"type":"click","id":"e12"}}; the extension resolves it to the current element center.
+- For tasks that need exact values (totals, percentages, prices), call read_text first and compute from the exact text — the screenshot may be inaccurate.
+- For downloading images/audio/files, use download with the element id (images expose src, links expose href) instead of looking for a download button.
 - Scroll may omit x/y. The extension supplies a safe default.
 - Prefer acting on elements from the tree; use the screenshot for anything not in the tree.
 - Example response (by coordinates): {{"actions": [{{"type": "click", "x": 120, "y": 340}}], "note": "Clicking the submit button"}}
@@ -79,7 +86,8 @@ Rules:
 - Completion check: before doing anything else, ask yourself "is the task already achieved on this screen?" If yes, return done immediately instead of continuing to act.
 - Reporting rule: if the task asks you to find, read, extract, calculate, or compare ANY information (totals, percentages, prices, names, counts), you MUST finish with an answer containing the result — e.g. {{"answer": "Total lectures: 40, attended: 32 (80%)"}} with empty actions. Do the math yourself from the values you read. NEVER return done for such tasks without an answer; a bare done means the user gets nothing.
 - {{"type": "done"}} is only for tasks where nothing needs to be reported back (e.g. pure navigation, clicking a button). If useful context remains, include it as a summary field: {{"type": "done", "summary": "..."}}.
-- Research-style tasks (find, look for, compare, list, cheapest/best X): once the sorted/filtered results are on screen, STOP browsing and return an answer summarizing the findings — e.g. the top 5 items with names and prices — with an empty actions list. Do not keep scrolling after the requested results are visible.
+- Research-style tasks (find, look for, compare, list, cheapest/best X, summarize top N): once the sorted/filtered results are on screen, open each relevant item (click its link), read its details, store the key facts with a remember action, then use back to return to the list and open the next item. After collecting all items, return an answer summarizing the findings — e.g. the top N items with names, prices, and any requested details — with an empty actions list. Do not keep scrolling after the requested results are visible.
+- Use remember for every fact you may need later (names, prices, specs, totals); remembered facts survive page changes and are shown back to you in later steps.
 - Do not scroll endlessly. After roughly 2–3 screens of scrolling without finding new relevant content, summarize what you have found in an answer, or return fail if nothing matches.
 - If the history shows an action produced no visible change, do NOT repeat it. Change approach or return done/fail.
 - The tree may contain a "Page scroll" line and [rN] scrollable regions (filter panels, sidebars, lists). Content often exists below the fold or inside those regions: scroll the page or scroll inside a region (use its center coordinates) to reveal more options before concluding something is missing.
@@ -102,8 +110,10 @@ def _image_to_data_url(file_storage=None, b64=None) -> str:
     raise ValueError("no image provided (send 'image' file or 'image_b64' field)")
 
 
-def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", stream: bool = False):
+def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", findings=None, stream: bool = False):
     user_text = f"Task: {task}\n\nAccessibility tree:\n{tree}"
+    if findings:
+        user_text += "\n\nFacts remembered from earlier pages:\n" + json.dumps(findings, indent=2)
     if history:
         user_text += "\n\nPrevious actions:\n" + json.dumps(history, indent=2)
     if hint:
@@ -234,6 +244,7 @@ def ask():
             task = body.get("task", "")
             history = body.get("history", [])
             hint = body.get("hint", "")
+            findings = body.get("findings", [])
         else:
             image_url = _image_to_data_url(
                 file_storage=request.files.get("image"),
@@ -243,11 +254,12 @@ def ask():
             task = request.form.get("task", "")
             history = json.loads(request.form.get("history", "[]"))
             hint = request.form.get("hint", "")
+            findings = json.loads(request.form.get("findings", "[]"))
 
         if not tree and not image_url:
             return jsonify({"error": "tree or image required"}), 400
 
-        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint)
+        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint, findings)
         return jsonify({"actions": actions, "note": note, "answer": answer})
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return jsonify({"error": str(e)}), 400
@@ -270,7 +282,7 @@ def ask_stream():
     def generate():
         accumulated = []
         try:
-            stream = _ask_openrouter(image_url, tree, task, history, hint, stream=True)
+            stream = _ask_openrouter(image_url, tree, task, history, hint, findings, stream=True)
             for chunk in stream:
                 text = _extract_text(chunk)
                 if text:

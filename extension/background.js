@@ -95,6 +95,7 @@ async function startTask(task) {
     task: String(task).trim(),
     step: 0,
     history: [],
+    findings: [],
     lastTreeHash: null,
     stallCount: 0,
     scrollRun: 0,
@@ -120,6 +121,7 @@ function stopTask(reason = "Stopped") {
     task: "",
     step: 0,
     history: [],
+    findings: [],
     lastTreeHash: null,
     stallCount: 0,
     scrollRun: 0,
@@ -257,6 +259,7 @@ async function runTaskLoop() {
         task,
         history: taskState.history.slice(-20),
         hint,
+        findings: taskState.findings,
       },
       (delta) => agentEvent("step-delta", { step, text: delta })
     );
@@ -264,9 +267,27 @@ async function runTaskLoop() {
     if (!taskState.running) return;
     if (decision.note) agentEvent("step-note", { step, note: decision.note });
 
-    const actions = Array.isArray(decision.actions) ? decision.actions : [];
+    let actions = Array.isArray(decision.actions) ? decision.actions : [];
     agentEvent("step-actions", { step, actions });
     log(`Step ${step}: server returned ${actions.length} action(s)`);
+
+    // remember actions record facts for the final summary; they never touch
+    // the browser. If a step only remembers, nothing else executes.
+    if (actions.some((action) => action.type === "remember")) {
+      for (const action of actions.filter((action) => action.type === "remember")) {
+        if (action.fact) {
+          taskState.findings.push(action.fact);
+          log(`Step ${step}: remembered — ${action.fact}`);
+        }
+      }
+      actions = actions.filter((action) => action.type !== "remember");
+      if (actions.length === 0) {
+        taskState.history.push({ step, actions: [], results: [{ ok: true, detail: "remembered" }] });
+        await sleep(200);
+        continue;
+      }
+      agentEvent("step-actions", { step, actions });
+    }
 
     if (decision.answer) {
       // Informational reply: show it in the chat and end the run.
@@ -304,8 +325,11 @@ async function runTaskLoop() {
     }
 
     for (const result of results) {
-      if (result.ok) log(`Step ${step}: ${result.action.type} OK — ${result.detail}`);
-      else log(`Step ${step}: ${result.action.type} FAILED — ${result.error}`);
+      if (result.ok) {
+        // read_text results can be long; keep the log readable.
+        const detail = String(result.detail || "");
+        log(`Step ${step}: ${result.action.type} OK — ${detail.length > 300 ? detail.slice(0, 300) + "… (" + detail.length + " chars)" : detail}`);
+      } else log(`Step ${step}: ${result.action.type} FAILED — ${result.error}`);
     }
 
     taskState.history.push({
@@ -322,7 +346,12 @@ async function runTaskLoop() {
       : 0;
 
     if (!taskState.running) return;
-    await sleep(700);
+    // Navigation actions trigger page loads; give them time to settle before
+    // the next screenshot, otherwise we capture the old page.
+    const navigates = executableActions.some((action) =>
+      ["navigate", "back", "forward"].includes(action.type)
+    );
+    await sleep(navigates ? 1500 : 700);
   }
 }
 

@@ -160,23 +160,30 @@ function propertiesFor(element) {
   const props = {};
   const rawHref = element.href || element.getAttribute("href");
   if (rawHref) {
-    try {
-      const url = new URL(rawHref, location.href);
-      // Keep useful navigation context but drop query/hash values, which often
-      // contain tokens, IDs, search terms, or other user data.
-      url.username = "";
-      url.password = "";
-      url.search = "";
-      url.hash = "";
-      props.href = textLooksSensitive(url.pathname) ? "[REDACTED HREF]" : url.toString();
-    } catch {
-      props.href = "[REDACTED HREF]";
-    }
+    props.href = safeUrlForDisplay(rawHref);
   }
+
+  // Expose image sources so the model can download images directly instead of
+  // hunting for download buttons.
+  const src = element.currentSrc || element.src || element.getAttribute("src");
+  if (src) props.src = safeUrlForDisplay(src);
 
   const alt = element.getAttribute("alt");
   if (alt) props.alt = sanitizeText(alt);
   return props;
+}
+
+function safeUrlForDisplay(rawUrl) {
+  try {
+    const url = new URL(rawUrl, location.href);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return textLooksSensitive(url.pathname) ? "[REDACTED URL]" : url.toString();
+  } catch {
+    return "[REDACTED URL]";
+  }
 }
 
 function stateFor(element) {
@@ -429,6 +436,33 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return false;
     }
     sendResponse({ rect: rectFor(element) });
+    return false;
+  }
+
+  if (request.action === "getResourceUrl") {
+    const element = elementRefs.get(request.id);
+    if (!element) {
+      sendResponse({ error: `element ${request.id} is unavailable` });
+      return false;
+    }
+    const url = element.currentSrc || element.src || element.href || element.getAttribute("href");
+    if (!url) {
+      sendResponse({ error: `element ${request.id} has no downloadable resource` });
+      return false;
+    }
+    sendResponse({ url: new URL(url, location.href).toString() });
+    return false;
+  }
+
+  if (request.action === "getPageText") {
+    const element = request.id ? elementRefs.get(request.id) : document.body;
+    if (!element) {
+      sendResponse({ error: `element ${request.id} is unavailable` });
+      return false;
+    }
+    // Privacy-consistent with the screenshot: PII is masked, structure kept.
+    const text = sanitizeText(normalize(element.innerText, 8000));
+    sendResponse({ text: text.slice(0, 8000) });
     return false;
   }
 });
