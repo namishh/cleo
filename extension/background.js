@@ -491,6 +491,7 @@ async function runTaskLoop(chatId) {
         log(chatId, `Step ${step}: ${result.action.type} OK — ${detail.length > 300 ? detail.slice(0, 300) + "… (" + detail.length + " chars)" : detail}`);
       } else log(chatId, `Step ${step}: ${result.action.type} FAILED — ${result.error}`);
     }
+    state.lastActionTs = Date.now();
 
     const historyEntry = state.history[state.history.length - 1];
     historyEntry.actions = executableActions;
@@ -511,10 +512,17 @@ async function runTaskLoop(chatId) {
     }
 
     if (!state.running) return;
+    // Navigation actions trigger page loads; wait for them to finish before
+    // the next screenshot, otherwise we capture the old page.
     const navigates = executableActions.some((action) =>
       ["navigate", "back", "forward"].includes(action.type)
     );
-    await sleep(navigates ? 1500 : 700);
+    if (navigates) {
+      await waitForTabLoad(tabId, 10000);
+      await sleep(300);
+    } else {
+      await sleep(700);
+    }
   }
 }
 
@@ -648,6 +656,49 @@ chrome.debugger.onDetach.addListener((source) => {
     stopTask(chatId, "Stopped: debugger detached");
   }
 });
+
+// When a page opens a new tab in response to one of our clicks
+// (target="_blank" links, window.open), adopt it as the task's tab so the
+// loop follows the content instead of screenshotting the stale page.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (!tab.openerTabId || !tab.id) return;
+  for (const state of taskStates.values()) {
+    if (!state.running || state.tabId !== tab.openerTabId) continue;
+    // Only adopt if one of our actions ran very recently — a tab the user
+    // opened manually from that page should not hijack the task.
+    if (Date.now() - (state.lastActionTs || 0) > 5000) continue;
+    adoptNewTab(state, tab.id);
+    break;
+  }
+});
+
+async function adoptNewTab(state, newTabId) {
+  const oldTabId = state.tabId;
+  log(state.chatId, `Page opened a new tab; switching task to tab ${newTabId}`);
+  state.tabId = newTabId;
+  await attachDebugger(newTabId);
+  chrome.debugger.detach({ tabId: oldTabId }).catch(() => {});
+  await waitForTabLoad(newTabId, 10000);
+}
+
+function waitForTabLoad(tabId, timeout = 10000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, timeout);
+    function listener(id, info) {
+      if (id === tabId && info.status === "complete") done();
+    }
+    function done() {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+    // Already finished loading before we started listening?
+    chrome.tabs.get(tabId).then((t) => {
+      if (t.status === "complete") done();
+    }).catch(done);
+  });
+}
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startTask") {
