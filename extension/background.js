@@ -13,9 +13,6 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
   console.error("Failed to set side panel behavior:", error);
 });
 
-let offscreenReadyPromise = null;
-let offscreenResolve = null;
-
 // One independent automation state per chat — parallel chats never share
 // context, history, or findings.
 const taskStates = new Map(); // chatId -> state
