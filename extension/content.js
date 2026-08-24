@@ -33,6 +33,12 @@ const LANDMARK_SELECTOR = [
   "[role=navigation]",
 ].join(",");
 
+const IMAGE_SELECTOR = [
+  "img[alt]:not([alt=''])",
+  "img[aria-label]",
+  "[role=img][aria-label]",
+].join(",");
+
 const EMAIL_RE = /[\w.-]+@[\w.-]+\.[A-Za-z]{2,}/i;
 const PHONE_RE = /(?:\+?\d[\d() .-]{6,}\d)/;
 const DATE_RE = /\b(?:\d{1,4}[-/.]){2}\d{1,4}\b/;
@@ -142,11 +148,19 @@ function roleFor(element) {
     return "textbox";
   }
   if (/^h[1-6]$/.test(tag)) return "heading";
+  if (tag === "img") return "img";
   if (tag === "nav") return "navigation";
   if (tag === "main") return "main";
   if (tag === "form") return "form";
   if (tag === "dialog") return "dialog";
   return "generic";
+}
+
+function propertiesFor(element) {
+  const props = {};
+  const href = element.href || element.getAttribute("href");
+  if (href) props.href = href;
+  return props;
 }
 
 function stateFor(element) {
@@ -265,6 +279,7 @@ function collectElements(privacyRegions = []) {
   const all = new Set([
     ...document.querySelectorAll(INTERACTIVE_SELECTOR),
     ...document.querySelectorAll(LANDMARK_SELECTOR),
+    ...document.querySelectorAll(IMAGE_SELECTOR),
   ]);
   const elements = [];
 
@@ -285,6 +300,7 @@ function collectElements(privacyRegions = []) {
       name: name || `[${role}]`,
       rect,
       state: stateFor(element),
+      properties: propertiesFor(element),
     });
 
     if (elements.length >= 300) break;
@@ -297,7 +313,10 @@ function formatTree(elements) {
   const lines = elements.slice(0, 250).map((element) => {
     const { x, y, width, height } = element.rect;
     const state = element.state.length ? ` {${element.state.join(", ")}}` : "";
-    return `[${element.id}] ${element.role} "${element.name.slice(0, 120)}" @ (${x},${y},${width}x${height})${state}`;
+    const props = Object.entries(element.properties || {})
+      .map(([key, value]) => ` ${key}=${String(value).slice(0, 120)}`)
+      .join("");
+    return `[${element.id}] ${element.role} "${element.name.slice(0, 120)}" @ (${x},${y},${width}x${height})${state}${props}`;
   });
   if (elements.length > 250) lines.push(`... (${elements.length - 250} elements omitted)`);
   return lines.join("\n") || "(no visible actionable elements)";

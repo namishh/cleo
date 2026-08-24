@@ -53,7 +53,7 @@ ACTION_SPACE = {
 
 SYSTEM_PROMPT = f"""You are a browser automation agent. You receive:
 1. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them).
-2. A compact accessibility tree listing actionable elements with [id], role, name, position (x,y,w,h) and state.
+2. A compact accessibility tree listing actionable elements with [id], role, name, position (x,y,w,h), state, and for links the href.
 
 Decide the next action(s) to progress the user's task.
 
