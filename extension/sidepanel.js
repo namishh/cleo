@@ -111,6 +111,55 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  // ponytail: temporary click-loop test button, delete once background-input
+  // behaviour is confirmed
+  const clickLoopBtn = document.getElementById("click-loop-btn");
+  let clickLoopRunning = false;
+
+  clickLoopBtn.addEventListener("click", async () => {
+    clickLoopBtn.disabled = true;
+    try {
+      if (!clickLoopRunning) {
+        const response = await chrome.runtime.sendMessage({
+          action: "startClickLoop",
+          x: Number(tX.value),
+          y: Number(tY.value),
+        });
+        if (response?.error) {
+          logAction(`click loop FAILED to start: ${response.error}`);
+        } else {
+          clickLoopRunning = true;
+          clickLoopBtn.textContent = "Click loop: ON";
+          clickLoopBtn.classList.add("stop");
+          clickLoopBtn.classList.remove("start");
+          logAction(`click loop started on tab ${response.tabId}`);
+        }
+      } else {
+        await chrome.runtime.sendMessage({ action: "stopClickLoop" });
+        clickLoopRunning = false;
+        clickLoopBtn.textContent = "Click loop: off";
+        clickLoopBtn.classList.add("start");
+        clickLoopBtn.classList.remove("stop");
+        logAction("click loop stopped");
+      }
+    } catch (err) {
+      logAction(`click loop error: ${err.message}`);
+    } finally {
+      clickLoopBtn.disabled = false;
+    }
+  });
+
+  chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === "clickLoopTick") {
+      logAction(request.message);
+    } else if (request.action === "clickLoopStopped") {
+      clickLoopRunning = false;
+      clickLoopBtn.textContent = "Click loop: off";
+      clickLoopBtn.classList.add("start");
+      clickLoopBtn.classList.remove("stop");
+    }
+  });
+
   toggleBtn.addEventListener("click", async () => {
     toggleBtn.disabled = true;
     try {

@@ -61,6 +61,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
 
+  if (request.action === "startClickLoop") {
+    startClickLoop(Number(request.x), Number(request.y))
+      .then((state) => sendResponse({ tabId: state.tabId }))
+      .catch((err) => sendResponse({ error: err.message }));
+    return true;
+  }
+
+  if (request.action === "stopClickLoop") {
+    stopClickLoop();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   if (request.action === "executeActions") {
     executeActionBatch(request.tabId, request.actions)
       .then((results) => sendResponse({ results }))
@@ -242,6 +255,50 @@ function scheduleDebuggerDetach(tabId) {
     chrome.debugger.detach({ tabId }).catch(() => {});
     detachTimer = null;
   }, 15000);
+}
+
+// ponytail: temporary 1s click loop for verifying background-tab input;
+// delete alongside the side-panel test button once confirmed
+let clickLoop = { running: false, tabId: null, timer: null };
+
+function reportClickLoop(message) {
+  chrome.runtime.sendMessage({ action: "clickLoopTick", message }).catch(() => {});
+}
+
+function stopClickLoop() {
+  if (clickLoop.timer) clearInterval(clickLoop.timer);
+  clickLoop = { running: false, tabId: null, timer: null };
+  chrome.runtime.sendMessage({ action: "clickLoopStopped" }).catch(() => {});
+}
+
+async function startClickLoop(x, y) {
+  if (clickLoop.running) return clickLoop;
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error("No active tab");
+  clickLoop = { running: true, tabId: tab.id, timer: null };
+  await ensureDebuggerAttached(tab.id);
+
+  const tick = async () => {
+    if (!clickLoop.running) return;
+    try {
+      const results = await executeActions(clickLoop.tabId, [{ type: "click", x, y }]);
+      const result = results[0];
+      reportClickLoop(result.ok ? `click OK (${x}, ${y})` : `click FAILED: ${result.error}`);
+    } catch (error) {
+      reportClickLoop(`click loop error: ${error.message}`);
+      if (
+        String(error.message).includes("No tab with id") ||
+        String(error.message).includes("not attached")
+      ) {
+        stopClickLoop();
+      }
+    }
+  };
+
+  await tick();
+  clickLoop.timer = setInterval(tick, 1000);
+  return clickLoop;
 }
 
 async function runOnce() {
