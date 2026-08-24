@@ -80,6 +80,9 @@ async function getKijiTokenizer() {
     // extension URL itself is not a valid HuggingFace model ID.
     transformersEnv.allowLocalModels = true;
     transformersEnv.allowRemoteModels = false;
+    // Chrome extension URLs cannot be used as Cache API request keys. Disable
+    // the browser cache and fetch the bundled tokenizer files directly.
+    transformersEnv.useBrowserCache = false;
     transformersEnv.localModelPath = chrome.runtime.getURL("models/");
     kijiTokenizer = await AutoTokenizer.from_pretrained("kiji-tokenizer", {
       local_files_only: true,

@@ -194,7 +194,7 @@ async function actionKey(tabId, action) {
     const special = SPECIAL_KEY_CODES[main];
     if (!special) throw new Error(`unsupported key: "${main}"`);
     await send(tabId, "Input.dispatchKeyEvent", {
-      type: "rawKeyDown",
+      type: "keyDown",
       ...special,
       modifiers,
     });

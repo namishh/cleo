@@ -64,12 +64,16 @@ Respond with a JSON object of this exact shape:
 {{"actions": [ <action>, <action>, ... ], "note": "<optional short instruction to the operator, e.g. what to look for next, or why you are stuck>"}}
 
 Rules:
-- "actions" is a list of 1 to 5 actions to execute in order. Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
+- "actions" is a list of 1 to 5 actions to execute in order. It must never be empty. If you cannot decide, return {{type: "fail", reason: "..."}} instead of an empty list.
+- Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
 - Coordinates are in CSS pixels relative to the screenshot's top-left corner. Use the numbers inside @ (x,y,w,h) from the tree, e.g. click the center of an element.
 - Prefer an element id from the tree, e.g. {{"type":"click","id":"e12"}}; the extension resolves it to the current element center.
 - Scroll may omit x/y. The extension supplies a safe default.
 - Prefer acting on elements from the tree; use the screenshot for anything not in the tree.
-- Example response: {{"actions": [{{"type": "click", "x": 120, "y": 340}}], "note": "Clicking the submit button"}}
+- Example response (by coordinates): {{"actions": [{{"type": "click", "x": 120, "y": 340}}], "note": "Clicking the submit button"}}
+- Example response (by element id): {{"actions": [{{"type": "click", "id": "e62"}}], "note": "Clicking the image"}}
+- Example response (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
+- NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
 - End the list with {{"type": "done"}} only when the task is fully complete.
 - Return {{"type": "fail", "reason": "..."}} if the task is impossible or you are stuck.
 - "note" is optional free text for the operator (e.g. "the submit button is disabled, waiting").
@@ -117,6 +121,20 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history) -> tuple[list
     return actions, note
 
 
+def _normalize_action(action):
+    """Accept flat actions and the common nested LLM mistake."""
+    if not isinstance(action, dict):
+        return None
+    if "type" in action:
+        return action
+    # {"click": {"id": "e62"}} -> {"type": "click", "id": "e62"}
+    if len(action) == 1:
+        key, value = next(iter(action.items()))
+        if key in ACTION_SPACE and isinstance(value, dict):
+            return {"type": key, **value}
+    return None
+
+
 def _parse_response(raw: str) -> tuple[list, str | None]:
     """Parse the model reply into (actions, note).
 
@@ -132,16 +150,20 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
         except json.JSONDecodeError:
             parsed = None
         if isinstance(parsed, dict):
-            if isinstance(parsed.get("actions"), list):
-                actions = parsed["actions"]
+            raw_actions = parsed.get("actions")
+            if isinstance(raw_actions, list):
+                actions = raw_actions
+            elif isinstance(raw_actions, dict):
+                actions = [raw_actions]
             elif "type" in parsed:
                 actions = [parsed]
             else:
                 actions = None
             note = parsed.get("note") if isinstance(parsed.get("note"), str) else None
             if actions is not None:
+                normalized = [_normalize_action(a) for a in actions]
                 try:
-                    return _validate_actions(actions), note
+                    return _validate_actions(normalized), note
                 except ValueError as e:
                     return [], f"Malformed actions ({e}): {text}"
 
@@ -153,8 +175,9 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
         except json.JSONDecodeError:
             parsed_list = None
         if isinstance(parsed_list, list):
+            normalized = [_normalize_action(a) for a in parsed_list]
             try:
-                return _validate_actions(parsed_list), None
+                return _validate_actions(normalized), None
             except ValueError as e:
                 return [], f"Malformed actions ({e}): {text}"
 

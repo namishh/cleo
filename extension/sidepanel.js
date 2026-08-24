@@ -4,6 +4,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const stopBtn = document.getElementById("stop-btn");
   const statusEl = document.getElementById("status");
   const activityLog = document.getElementById("activity-log");
+  const a11yTreeEl = document.getElementById("a11y-tree");
   const screenshots = document.getElementById("screenshots");
 
   let running = false;
@@ -43,6 +44,7 @@ document.addEventListener("DOMContentLoaded", () => {
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === "agentEvent") {
       if (message.kind === "log") log(message.message);
+      if (message.kind === "tree") a11yTreeEl.textContent = message.tree || "(empty tree)";
       if (message.kind === "screenshot") addScreenshot(message.image, message.step);
       if (message.kind === "status") statusEl.textContent = message.message;
     }
