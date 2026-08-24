@@ -75,7 +75,7 @@ body {
 }
 
 .avatar.user {
-  background: linear-gradient(135deg, #4f46e5, #9333ea);
+  background: linear-gradient(135deg, #2980B9, #6dd5fa, #ffffff);
 }
 
 .msg-body {
@@ -90,6 +90,99 @@ body {
 .msg.answer .msg-body::before {
   content: "cleo: ";
   color: var(--dim);
+}
+
+/* markdown rendering */
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.markdown p {
+  margin: 6px 0;
+}
+
+.markdown a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown strong {
+  font-weight: 700;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+
+.markdown li {
+  margin: 2px 0;
+}
+
+.markdown code {
+  padding: 1px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.markdown pre {
+  margin: 8px 0;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.markdown pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.markdown blockquote {
+  margin: 8px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--dim);
+}
+
+.markdown table {
+  margin: 8px 0;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.markdown th,
+.markdown td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--surface);
+  font-weight: 700;
+}
+
+.markdown hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 /* collapsible step accordions */

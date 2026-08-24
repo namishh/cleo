@@ -40,12 +40,28 @@ function addUserMessage(text) {
   scrollToEnd();
 }
 
+function sanitizeMarkdownHTML(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const dangerous = template.content.querySelectorAll("script, style, iframe, object, embed, link, meta");
+  dangerous.forEach((node) => node.remove());
+  template.content.querySelectorAll("*").forEach((node) => {
+    for (const attr of [...node.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith("on") || (name === "href" || name === "src") && /^\s*javascript:/i.test(attr.value)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  });
+  return template.content;
+}
+
 function addAnswerMessage(text) {
   const div = document.createElement("div");
   div.className = "msg answer";
   const body = document.createElement("div");
-  body.className = "msg-body";
-  body.textContent = text;
+  body.className = "msg-body markdown";
+  body.appendChild(sanitizeMarkdownHTML(marked.parse(text)));
   div.append(avatar("answer"), body);
   streamEl.appendChild(div);
   scrollToEnd();
