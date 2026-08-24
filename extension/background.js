@@ -36,7 +36,15 @@ async function loadAllChats() {
 
 async function loadChat(id) {
   const chats = await loadAllChats();
-  return chats[id] || null;
+  const chat = chats[id];
+  if (!chat) return null;
+  // Normalize records written by older/buggy versions.
+  chat.entries ||= [];
+  chat.taskHistory ||= [];
+  chat.findings ||= [];
+  chat.lastStep ||= 0;
+  chat.title ||= "untitled";
+  return chat;
 }
 
 async function saveChat(chat) {
@@ -187,12 +195,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch((error) => sendResponse({ error: error.message }));
     return true;
   }
-  if (request.action === "startTask") {
-    startTask(request.task)
-      .then((state) => sendResponse({ tabId: state.tabId }))
-      .catch((error) => sendResponse({ error: error.message }));
-    return true;
-  }
 
   if (request.action === "stopTask") {
     stopTask("Stopped");
@@ -244,6 +246,7 @@ async function startTask(task) {
     chat = newChatRecord();
     await setActiveChatId(chat.id);
   }
+  chat.entries ||= [];
   currentChatId = chat.id;
 
   chat.entries.push({ t: "user", text: String(task).trim(), ts: Date.now() });
