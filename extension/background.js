@@ -281,7 +281,10 @@ async function runTaskLoop() {
       return;
     }
     if (actions.some((action) => action.type === "done")) {
-      stopTask("Completed");
+      const done = actions.find((action) => action.type === "done");
+      const summary = done.summary || done.answer || done.text;
+      if (summary) agentEvent("answer", { text: summary });
+      stopTask(summary ? "Completed" : "Completed (no summary returned)");
       return;
     }
 
