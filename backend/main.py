@@ -276,6 +276,7 @@ def ask_stream():
         task = body.get("task", "")
         history = body.get("history", [])
         hint = body.get("hint", "")
+        findings = body.get("findings", [])
     except (ValueError, KeyError) as e:
         return jsonify({"error": str(e)}), 400
 
