@@ -481,6 +481,26 @@ async function runTaskLoop() {
       agentEvent("step-actions", { step, actions });
     }
 
+    // Persist the step (reasoning, screenshot, actions) immediately so it
+    // survives even if the run ends on this step.
+    taskState.history.push({ step, actions, note: decision.note || null });
+    const stepChat = await loadChat(taskState.chatId);
+    if (stepChat) {
+      stepChat.entries.push({
+        t: "step",
+        step,
+        actions,
+        note: decision.note || null,
+        screenshot: redacted.redactedImageUrl,
+        streamText: stepStreamText.join(""),
+        ts: Date.now(),
+      });
+      stepChat.taskHistory = taskState.history;
+      stepChat.findings = taskState.findings;
+      stepChat.lastStep = taskState.step;
+      await saveChat(stepChat);
+    }
+
     if (decision.answer) {
       // Informational reply: show it in the chat and end the run.
       agentEvent("answer", { text: decision.answer });
@@ -525,7 +545,6 @@ async function runTaskLoop() {
     }
 
     if (actions.length === 0) {
-      taskState.history.push({ step, actions: [], note: decision.note || "no action" });
       await sleep(1000);
       continue;
     }
@@ -547,27 +566,21 @@ async function runTaskLoop() {
       } else log(`Step ${step}: ${result.action.type} FAILED — ${result.error}`);
     }
 
-    taskState.history.push({
-      step,
-      actions: executableActions,
-      results: results.map((result) => ({ ok: result.ok, detail: result.detail, error: result.error })),
-      note: decision.note || null,
-    });
+    // Attach execution results to the persisted history entry and step entry.
+    const historyEntry = taskState.history[taskState.history.length - 1];
+    historyEntry.actions = executableActions;
+    historyEntry.results = results.map((result) => ({ ok: result.ok, detail: result.detail, error: result.error }));
 
-    // Persist the step into the chat transcript.
     const chat = await loadChat(taskState.chatId);
     if (chat) {
-      chat.entries.push({
-        t: "step",
-        step,
-        actions: executableActions,
-        note: decision.note || null,
-        screenshot: redacted.redactedImageUrl,
-        streamText: stepStreamText.join(""),
-        ts: Date.now(),
-      });
+      for (let i = chat.entries.length - 1; i >= 0; i--) {
+        if (chat.entries[i].t === "step" && chat.entries[i].step === step) {
+          chat.entries[i].actions = executableActions;
+          chat.entries[i].results = historyEntry.results;
+          break;
+        }
+      }
       chat.taskHistory = taskState.history;
-      chat.findings = taskState.findings;
       chat.lastStep = taskState.step;
       await saveChat(chat);
     }

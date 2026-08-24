@@ -301,6 +301,10 @@ function renderStepEntry(entry) {
     for (const action of entry.actions) {
       const item = document.createElement("li");
       item.textContent = formatAction(action);
+      if (entry.results) {
+        const result = entry.results.find((r) => r.action && JSON.stringify(r.action) === JSON.stringify(action));
+        if (result && !result.ok) item.classList.add("failed");
+      }
       list.appendChild(item);
     }
     element.body.appendChild(list);
