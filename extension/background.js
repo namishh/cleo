@@ -232,8 +232,14 @@ async function startTask(task) {
   await attachDebugger(tab.id);
 
   // Continue the active chat if one exists; otherwise start a new one.
-  const chatId = await getActiveChatId();
-  let chat = chatId ? await loadChat(chatId) : null;
+  // getActiveChatId may point to a chat that was deleted in another window,
+  // so treat any failure as "no active chat".
+  let chat = null;
+  try {
+    chat = await (await getActiveChatId()) ? await loadChat(await getActiveChatId()) : null;
+  } catch {
+    chat = null;
+  }
   if (!chat) {
     chat = newChatRecord();
     await setActiveChatId(chat.id);
