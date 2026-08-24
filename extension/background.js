@@ -201,6 +201,20 @@ async function getCompactPageSnapshot(tabId) {
   }
 }
 
+async function ensureDebuggerAttached(tabId) {
+  try {
+    const targets = await chrome.debugger.getTargets();
+    const attached = targets.some((t) => t.tabId === tabId && t.attached);
+    if (!attached) {
+      await chrome.debugger.attach({ tabId }, "1.3");
+      loopState.debuggerAttached = tabId === loopState.tabId;
+    }
+  } catch (err) {
+    // Already attached (e.g. from a previous run) is fine.
+    if (!String(err.message).includes("Another debugger")) throw err;
+  }
+}
+
 // Execute a batch of backend actions on the given tab. Attaches the debugger
 // if the loop isn't running so test buttons work standalone.
 async function executeActionBatch(tabId, actions) {
