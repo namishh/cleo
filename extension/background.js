@@ -31,10 +31,30 @@ let taskState = {
 
 async function loadAllChats() {
   const store = await chrome.storage.local.get(CHATS_KEY);
-  return store[CHATS_KEY] || {};
+  const chats = store[CHATS_KEY] || {};
+
+  // Migrate records saved under invalid keys or missing ids (legacy bug that
+  // stored a chat under the literal key "undefined").
+  for (const key of Object.keys(chats)) {
+    const chat = chats[key];
+    if (key === "undefined" || !chat?.id) {
+      delete chats[key];
+      if (chat && typeof chat === "object") {
+        chat.id = `chat_${chat.createdAt || Date.now()}_migrated`;
+        chat.entries ||= [];
+        chat.taskHistory ||= [];
+        chat.findings ||= [];
+        chat.title ||= "untitled";
+        chat.lastStep ||= 0;
+        chats[chat.id] = chat;
+      }
+    }
+  }
+  return chats;
 }
 
 async function loadChat(id) {
+  if (!id || id === "undefined") return null;
   const chats = await loadAllChats();
   const chat = chats[id];
   if (!chat) return null;
@@ -48,22 +68,24 @@ async function loadChat(id) {
 }
 
 async function saveChat(chat) {
+  if (!chat?.id) throw new Error("cannot save chat without an id");
   chat.updatedAt = Date.now();
-  const store = await chrome.storage.local.get(CHATS_KEY);
-  const chats = store[CHATS_KEY] || {};
+  const chats = await loadAllChats();
   chats[chat.id] = chat;
   await chrome.storage.local.set({ [CHATS_KEY]: chats });
 }
 
 async function setActiveChatId(id) {
+  if (!id) return;
   currentChatId = id;
   await chrome.storage.local.set({ [ACTIVE_CHAT_KEY]: id });
 }
 
 async function getActiveChatId() {
-  if (currentChatId) return currentChatId;
+  if (currentChatId && currentChatId !== "undefined") return currentChatId;
   const store = await chrome.storage.local.get(ACTIVE_CHAT_KEY);
-  currentChatId = store[ACTIVE_CHAT_KEY] || null;
+  const id = store[ACTIVE_CHAT_KEY];
+  currentChatId = id && id !== "undefined" ? id : null;
   return currentChatId;
 }
 
