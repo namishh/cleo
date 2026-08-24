@@ -249,7 +249,7 @@ async function executeActionBatch(tabId, actions) {
 
 let detachTimer = null;
 function scheduleDebuggerDetach(tabId) {
-  if (loopState.running) return; // the loop manages its own attachment
+  if (loopState.running || clickLoop.running) return; // an active loop owns the attachment
   if (detachTimer) clearTimeout(detachTimer);
   detachTimer = setTimeout(() => {
     chrome.debugger.detach({ tabId }).catch(() => {});
@@ -278,10 +278,18 @@ async function startClickLoop(x, y) {
   if (!tab?.id) throw new Error("No active tab");
   clickLoop = { running: true, tabId: tab.id, timer: null };
   await ensureDebuggerAttached(tab.id);
+  if (detachTimer) {
+    // Cancel any pending auto-detach from earlier manual test actions.
+    clearTimeout(detachTimer);
+    detachTimer = null;
+  }
 
   const tick = async () => {
     if (!clickLoop.running) return;
     try {
+      // Self-heal: anything may have detached us (infobar dismissed, previous
+      // auto-detach timer). Re-attach cheaply before every click.
+      await ensureDebuggerAttached(clickLoop.tabId);
       const results = await executeActions(clickLoop.tabId, [{ type: "click", x, y }]);
       const result = results[0];
       reportClickLoop(result.ok ? `click OK (${x}, ${y})` : `click FAILED: ${result.error}`);
