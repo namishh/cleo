@@ -305,6 +305,13 @@ function stopTask(chatId, reason = "Stopped") {
   chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
   log(chatId, reason);
   notifyDone(state.tabId, reason);
+  // Clear the running flag so interrupted chats aren't resumed as zombies.
+  loadChat(chatId).then((chat) => {
+    if (chat) {
+      chat.running = false;
+      saveChat(chat);
+    }
+  }).catch(() => {});
   chrome.runtime.sendMessage({ action: "taskStopped", chatId, reason }).catch(() => {});
 }
 
@@ -417,20 +424,49 @@ async function runTaskLoop(chatId) {
     status(chatId, `Step ${step}: asking AI server...`);
 
     const stepStreamText = [];
-    const decision = await askBackendStream(
-      {
-        image: redacted.redactedImageUrl,
-        tree,
-        task: state.task,
-        history: state.history.slice(-20),
-        hint,
-        findings: state.findings,
-      },
-      (delta) => {
-        stepStreamText.push(delta);
-        emit(chatId, "step-delta", { step, text: delta });
-      }
-    );
+    // Watchdog: a hung backend stream must never freeze the chat at
+    // "running". Time out, then retry once before failing the step.
+    let decision;
+    try {
+      decision = await withTimeout(
+        askBackendStream(
+          {
+            image: redacted.redactedImageUrl,
+            tree,
+            task: state.task,
+            history: state.history.slice(-20),
+            hint,
+            findings: state.findings,
+          },
+          (delta) => {
+            stepStreamText.push(delta);
+            emit(chatId, "step-delta", { step, text: delta });
+          }
+        ),
+        120000,
+        "AI server did not respond in time"
+      );
+    } catch (error) {
+      log(chatId, `Step ${step}: ${error.message}; retrying once...`);
+      decision = await withTimeout(
+        askBackendStream(
+          {
+            image: redacted.redactedImageUrl,
+            tree,
+            task: state.task,
+            history: state.history.slice(-20),
+            hint: (hint ? hint + " " : "") + "Previous attempt timed out; respond concisely.",
+            findings: state.findings,
+          },
+          (delta) => {
+            stepStreamText.push(delta);
+            emit(chatId, "step-delta", { step, text: delta });
+          }
+        ),
+        120000,
+        "AI server timed out twice"
+      );
+    }
 
     if (!state.running) return;
     if (decision.note) emit(chatId, "step-note", { step, note: decision.note });
@@ -543,6 +579,7 @@ async function runTaskLoop(chatId) {
       }
       chat.taskHistory = state.history;
       chat.lastStep = state.step;
+      chat.lastTabId = state.tabId;
       await saveChat(chat);
     }
 
@@ -666,6 +703,52 @@ async function captureTabWithRetry(tabId, attempts = 3) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
+// ---------- resume interrupted tasks after service worker restarts ----------
+
+// MV3 can terminate the worker (sidebar toggles, tab focus churn, long
+// backend waits). The loop lives in memory, so on restart we pick running
+// chats back up: the loop is observation-driven, so resuming is just running
+// another step with the persisted history/findings.
+async function resumeInterruptedTasks() {
+  const chats = await loadAllChats();
+  for (const chat of Object.values(chats)) {
+    if (!chat.running) continue;
+    if (!chat.lastTabId) {
+      chat.running = false;
+      await saveChat(chat);
+      continue;
+    }
+    console.log(`Resuming interrupted task for ${chat.id}`);
+    taskStates.set(chat.id, {
+      running: true,
+      chatId: chat.id,
+      tabId: chat.lastTabId,
+      windowId: null,
+      task: chat.lastTask || "",
+      step: chat.lastStep || 0,
+      history: chat.taskHistory || [],
+      findings: chat.findings || [],
+      lastTreeHash: null,
+      stallCount: 0,
+      scrollRun: 0,
+    });
+    updateKeepalive();
+    runTaskLoop(chat.id).catch((error) => {
+      console.error(`Resumed task loop failed for ${chat.id}:`, error);
+      stopTask(chat.id, `Stopped: ${error.message}`);
+    });
+  }
+}
+
+resumeInterruptedTasks();
 
 function hashString(text) {
   let hash = 5381;
