@@ -59,10 +59,12 @@ async function getActiveChatId() {
   return currentChatId;
 }
 
-function newChatRecord() {
+async function newChatRecord() {
+  const count = Object.keys(await loadAllChats()).length + 1;
   return {
     id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    title: null,
+    title: `New Chat #${count}`,
+    customTitle: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     entries: [],
@@ -91,6 +93,7 @@ async function autoTitle(chatId, text) {
     const chat = await loadChat(chatId);
     if (chat && body.title) {
       chat.title = body.title;
+      chat.customTitle = true;
       await saveChat(chat);
       agentEvent("title", { chatId, title: body.title });
     }
@@ -239,7 +242,7 @@ async function startTask(task) {
 
   chat.entries.push({ t: "user", text: String(task).trim(), ts: Date.now() });
   await saveChat(chat);
-  if (!chat.title) autoTitle(chat.id, task);
+  if (!chat.customTitle) autoTitle(chat.id, task);
 
   taskState = {
     running: true,
