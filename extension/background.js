@@ -29,6 +29,23 @@ let taskState = {
 
 // ---------- chat store (chrome.storage.local, unlimitedStorage) ----------
 
+function normalizeChat(chat) {
+  if (!chat || typeof chat !== "object") return false;
+  let changed = false;
+  if (!Array.isArray(chat.entries)) { chat.entries = []; changed = true; }
+  if (!Array.isArray(chat.taskHistory)) { chat.taskHistory = []; changed = true; }
+  if (!Array.isArray(chat.findings)) { chat.findings = []; changed = true; }
+  if (!chat.lastStep) { chat.lastStep = 0; changed = true; }
+  if (!chat.title) { chat.title = "untitled"; changed = true; }
+  for (const entry of chat.entries) {
+    if (!entry.t && entry.step !== undefined) {
+      entry.t = "step";
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 async function loadAllChats() {
   const store = await chrome.storage.local.get(CHATS_KEY);
   const chats = store[CHATS_KEY] || {};
@@ -43,14 +60,10 @@ async function loadAllChats() {
       migrated = true;
       if (chat && typeof chat === "object") {
         chat.id = `chat_${chat.createdAt || Date.now()}_migrated`;
-        chat.entries ||= [];
-        chat.taskHistory ||= [];
-        chat.findings ||= [];
-        chat.title ||= "untitled";
-        chat.lastStep ||= 0;
         chats[chat.id] = chat;
       }
     }
+    if (normalizeChat(chat)) migrated = true;
   }
   if (migrated) await chrome.storage.local.set({ [CHATS_KEY]: chats });
   return chats;
@@ -61,12 +74,7 @@ async function loadChat(id) {
   const chats = await loadAllChats();
   const chat = chats[id];
   if (!chat) return null;
-  // Normalize records written by older/buggy versions.
-  chat.entries ||= [];
-  chat.taskHistory ||= [];
-  chat.findings ||= [];
-  chat.lastStep ||= 0;
-  chat.title ||= "untitled";
+  normalizeChat(chat);
   return chat;
 }
 
