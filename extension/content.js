@@ -158,8 +158,24 @@ function roleFor(element) {
 
 function propertiesFor(element) {
   const props = {};
-  const href = element.href || element.getAttribute("href");
-  if (href) props.href = href;
+  const rawHref = element.href || element.getAttribute("href");
+  if (rawHref) {
+    try {
+      const url = new URL(rawHref, location.href);
+      // Keep useful navigation context but drop query/hash values, which often
+      // contain tokens, IDs, search terms, or other user data.
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      props.href = textLooksSensitive(url.pathname) ? "[REDACTED HREF]" : url.toString();
+    } catch {
+      props.href = "[REDACTED HREF]";
+    }
+  }
+
+  const alt = element.getAttribute("alt");
+  if (alt) props.alt = sanitizeText(alt);
   return props;
 }
 
