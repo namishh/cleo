@@ -22,7 +22,7 @@ import base64
 import json
 import os
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from openrouter import OpenRouter
 import dotenv
 
@@ -61,9 +61,10 @@ Available actions (return one JSON object per action):
 {json.dumps(ACTION_SPACE, indent=2)}
 
 Respond with a JSON object of this exact shape:
-{{"actions": [ <action>, <action>, ... ], "note": "<optional short instruction to the operator, e.g. what to look for next, or why you are stuck>"}}
+{{"actions": [ <action>, <action>, ... ], "note": "<optional short instruction to the operator>", "answer": "<optional direct answer to the user>"}}
 
 Rules:
+- If the user's request is a question or informational (summarize, sum numbers, read a value, describe something), return {{"answer": "<the answer>", "actions": []}}. The answer is shown directly to the user and the run ends.
 - "actions" is a list of 1 to 5 actions to execute in order. It must never be empty. If you cannot decide, return {{type: "fail", reason: "..."}} instead of an empty list.
 - Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
 - Coordinates are in CSS pixels relative to the screenshot's top-left corner. Use the numbers inside @ (x,y,w,h) from the tree, e.g. click the center of an element.
@@ -97,7 +98,7 @@ def _image_to_data_url(file_storage=None, b64=None) -> str:
     raise ValueError("no image provided (send 'image' file or 'image_b64' field)")
 
 
-def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "") -> tuple[list, str | None]:
+def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", stream: bool = False):
     user_text = f"Task: {task}\n\nAccessibility tree:\n{tree}"
     if history:
         user_text += "\n\nPrevious actions:\n" + json.dumps(history, indent=2)
@@ -105,7 +106,7 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "
         user_text += f"\n\nOperator hint: {hint}"
     user_text += "\n\nDecide the next action(s)."
 
-    response = client.chat.send(
+    return client.chat.send(
         model=MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -120,10 +121,22 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "
         max_tokens=800,
         temperature=0,
         response_format={"type": "json_object"},
+        stream=stream,
     )
-    raw = response.choices[0].message.content or ""
-    actions, note = _parse_response(raw)
-    return actions, note
+
+
+def _extract_text(chunk) -> str:
+    """Pull incremental text out of an OpenRouter stream chunk."""
+    try:
+        delta = chunk.choices[0].delta
+        return delta.content or ""
+    except (AttributeError, IndexError, TypeError):
+        return ""
+
+
+def _finish_stream(raw: str) -> dict:
+    actions, note, answer = _parse_response(raw)
+    return {"type": "result", "actions": actions, "note": note, "answer": answer, "raw": raw}
 
 
 def _normalize_action(action):
@@ -140,12 +153,12 @@ def _normalize_action(action):
     return None
 
 
-def _parse_response(raw: str) -> tuple[list, str | None]:
-    """Parse the model reply into (actions, note).
+def _parse_response(raw: str) -> tuple[list, str | None, str | None]:
+    """Parse the model reply into (actions, note, answer).
 
-    Accepts either the full {"actions": [...], "note": ...} envelope or a bare
-    single action / bare list of actions. A plain-text reply with no JSON is
-    surfaced as an operator note with no actions.
+    Accepts either the full {"actions": [...], "note": ..., "answer": ...}
+    envelope or a bare single action / bare list of actions. A plain-text reply
+    with no JSON is surfaced as an operator note with no actions.
     """
     text = raw.strip()
     start, end = text.find("{"), text.rfind("}")
@@ -162,15 +175,19 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
                 actions = [raw_actions]
             elif "type" in parsed:
                 actions = [parsed]
+            elif isinstance(parsed.get("answer"), str):
+                # Answer-only reply: no browser actions, just text for the user.
+                actions = []
             else:
                 actions = None
             note = parsed.get("note") if isinstance(parsed.get("note"), str) else None
+            answer = parsed.get("answer") if isinstance(parsed.get("answer"), str) else None
             if actions is not None:
                 normalized = [_normalize_action(a) for a in actions]
                 try:
-                    return _validate_actions(normalized), note
+                    return _validate_actions(normalized), note, answer
                 except ValueError as e:
-                    return [], f"Malformed actions ({e}): {text}"
+                    return [], f"Malformed actions ({e}): {text}", answer
 
     # Bare list of actions?
     list_start, list_end = text.find("["), text.rfind("]")
@@ -182,12 +199,12 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
         if isinstance(parsed_list, list):
             normalized = [_normalize_action(a) for a in parsed_list]
             try:
-                return _validate_actions(normalized), None
+                return _validate_actions(normalized), None, None
             except ValueError as e:
-                return [], f"Malformed actions ({e}): {text}"
+                return [], f"Malformed actions ({e}): {text}", None
 
     # No JSON at all — treat the whole reply as an operator note.
-    return [], (raw.strip() or None)
+    return [], (raw.strip() or None), None
 
 
 def _validate_actions(actions) -> list:
@@ -226,12 +243,50 @@ def ask():
         if not tree and not image_url:
             return jsonify({"error": "tree or image required"}), 400
 
-        actions, note = _ask_openrouter(image_url, tree, task, history, hint)
-        return jsonify({"actions": actions, "note": note})
+        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint)
+        return jsonify({"actions": actions, "note": note, "answer": answer})
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # openrouter SDK raises its own error types
         return jsonify({"error": f"OpenRouter request failed: {e}"}), 502
+
+
+@app.post("/ask_stream")
+def ask_stream():
+    try:
+        body = request.get_json(force=True)
+        image_url = _image_to_data_url(b64=body.get("image_b64"))
+        tree = body.get("tree", "")
+        task = body.get("task", "")
+        history = body.get("history", [])
+        hint = body.get("hint", "")
+    except (ValueError, KeyError) as e:
+        return jsonify({"error": str(e)}), 400
+
+    def generate():
+        accumulated = []
+        try:
+            stream = _ask_openrouter(image_url, tree, task, history, hint, stream=True)
+            for chunk in stream:
+                text = _extract_text(chunk)
+                if text:
+                    accumulated.append(text)
+                    yield f"data: {json.dumps({'type': 'delta', 'text': text})}\n\n"
+        except Exception as e:  # stream errors must still reach the client
+            yield f"data: {json.dumps({'type': 'result', 'actions': [], 'note': f'OpenRouter request failed: {e}', 'answer': None})}\n\n"
+            return
+
+        raw = "".join(accumulated)
+        actions, note, answer = _parse_response(raw)
+        yield "data: " + json.dumps(
+            {"type": "result", "actions": actions, "note": note, "answer": answer}
+        ) + "\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/health")

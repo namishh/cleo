@@ -1,10 +1,10 @@
 import { executeActions } from "./actions.js";
 
-const BACKEND_URL = "http://127.0.0.1:5001/ask";
+const BACKEND_BASE = "http://127.0.0.1:5001";
 const MAX_STEPS = 50;
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  console.log(`Browser Agent Sidebar installed. Reason: ${reason}`);
+  console.log(`Browser Agent installed. Reason: ${reason}`);
 });
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
@@ -99,7 +99,7 @@ async function startTask(task) {
     stallCount: 0,
   };
 
-  log(`Started task on tab ${tab.id}: ${taskState.task}`);
+  agentEvent("user", { text: taskState.task });
   status(`Running on tab ${tab.id}`);
   runTaskLoop().catch((error) => {
     console.error("Task loop failed:", error);
@@ -107,6 +107,29 @@ async function startTask(task) {
     stopTask(`Stopped: ${error.message}`);
   });
   return taskState;
+}
+
+function stopTask(reason = "Stopped") {
+  const tabId = taskState.tabId;
+  const wasRunning = taskState.running;
+  taskState = {
+    running: false,
+    tabId: null,
+    windowId: null,
+    task: "",
+    step: 0,
+    history: [],
+    lastTreeHash: null,
+    stallCount: 0,
+  };
+
+  if (wasRunning && tabId != null) {
+    chrome.debugger.detach({ tabId }).catch(() => {});
+  }
+  if (wasRunning) {
+    log(reason);
+    chrome.runtime.sendMessage({ action: "taskStopped", reason }).catch(() => {});
+  }
 }
 
 async function resolveActionTargets(tabId, actions, snapshot) {
@@ -142,29 +165,6 @@ async function resolveActionTargets(tabId, actions, snapshot) {
   }));
 }
 
-function stopTask(reason = "Stopped") {
-  const tabId = taskState.tabId;
-  const wasRunning = taskState.running;
-  taskState = {
-    running: false,
-    tabId: null,
-    windowId: null,
-    task: "",
-    step: 0,
-    history: [],
-    lastTreeHash: null,
-    stallCount: 0,
-  };
-
-  if (wasRunning && tabId != null) {
-    chrome.debugger.detach({ tabId }).catch(() => {});
-  }
-  if (wasRunning) {
-    log(reason);
-    chrome.runtime.sendMessage({ action: "taskStopped", reason }).catch(() => {});
-  }
-}
-
 async function runTaskLoop() {
   while (taskState.running) {
     if (taskState.step >= MAX_STEPS) {
@@ -175,6 +175,7 @@ async function runTaskLoop() {
     const step = ++taskState.step;
     const tabId = taskState.tabId;
     const task = taskState.task;
+    agentEvent("step-start", { step });
     status(`Step ${step}: observing tab ${tabId}...`);
 
     let tab;
@@ -235,28 +236,36 @@ async function runTaskLoop() {
     if (redacted?.error) throw new Error(redacted.error);
     if (!redacted?.redactedImageUrl) throw new Error("Redaction returned no image");
 
-    agentEvent("screenshot", {
-      image: redacted.redactedImageUrl,
-      step,
-    });
+    agentEvent("step-screenshot", { step, image: redacted.redactedImageUrl });
     log(`Step ${step}: redacted screenshot ready (faces: ${redacted.faceCount}, PII: ${redacted.piiCount})`);
 
     const tree = snapshot.tree || "(no accessibility data)";
-    agentEvent("tree", { tree, step });
     status(`Step ${step}: asking AI server...`);
 
-    const decision = await askBackend({
-      image: redacted.redactedImageUrl,
-      tree,
-      task,
-      history: taskState.history.slice(-20),
-      hint,
-    });
+    const decision = await askBackendStream(
+      {
+        image: redacted.redactedImageUrl,
+        tree,
+        task,
+        history: taskState.history.slice(-20),
+        hint,
+      },
+      (delta) => agentEvent("step-delta", { step, text: delta })
+    );
 
     if (!taskState.running) return;
-    if (decision.note) log(`Step ${step}: server note: ${decision.note}`);
+    if (decision.note) agentEvent("step-note", { step, note: decision.note });
+
     const actions = Array.isArray(decision.actions) ? decision.actions : [];
+    agentEvent("step-actions", { step, actions });
     log(`Step ${step}: server returned ${actions.length} action(s)`);
+
+    if (decision.answer) {
+      // Informational reply: show it in the chat and end the run.
+      agentEvent("answer", { text: decision.answer });
+      stopTask("Answered");
+      return;
+    }
 
     if (actions.some((action) => action.type === "fail")) {
       const failure = actions.find((action) => action.type === "fail");
@@ -288,15 +297,22 @@ async function runTaskLoop() {
       else log(`Step ${step}: ${result.action.type} FAILED — ${result.error}`);
     }
 
-    taskState.history.push({ step, actions, results, note: decision.note || null });
+    taskState.history.push({
+      step,
+      actions: executableActions,
+      results: results.map((result) => ({ ok: result.ok, detail: result.detail, error: result.error })),
+      note: decision.note || null,
+    });
+
+    if (!taskState.running) return;
     await sleep(700);
   }
 }
 
-async function askBackend(payload) {
+async function askBackendStream(payload, onDelta) {
   let response;
   try {
-    response = await fetch(BACKEND_URL, {
+    response = await fetch(`${BACKEND_BASE}/ask_stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -308,13 +324,43 @@ async function askBackend(payload) {
       }),
     });
   } catch (error) {
-    throw new Error(`Cannot reach backend at ${BACKEND_URL}; start it with 'cd backend && uv run python main.py' (${error.message})`);
+    throw new Error(
+      `Cannot reach backend at ${BACKEND_BASE}; start it with 'cd backend && uv run python main.py' (${error.message})`
+    );
   }
 
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Backend returned HTTP ${response.status}`);
-  if (!Array.isArray(body.actions)) throw new Error("Backend response has no actions array");
-  return body;
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Backend returned HTTP ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = { actions: [], note: null, answer: null };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const event of events) {
+      const line = event.split("\n").find((candidate) => candidate.startsWith("data: "));
+      if (!line) continue;
+      const parsed = JSON.parse(line.slice(6));
+      if (parsed.type === "delta") onDelta(parsed.text);
+      else if (parsed.type === "result") {
+        result = {
+          actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+          note: parsed.note || null,
+          answer: parsed.answer || null,
+        };
+      }
+    }
+  }
+  return result;
 }
 
 async function attachDebugger(tabId) {

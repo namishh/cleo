@@ -7,23 +7,15 @@
     <link rel="stylesheet" href="sidepanel.css" />
   </head>
   <body>
-    <main class="container">
-      <h1>Browser Agent</h1>
-      <textarea id="task-input" rows="4" placeholder="Tell the agent what to do..."></textarea>
-      <div class="controls">
-        <button id="start-btn" class="start">Start</button>
-        <button id="stop-btn" class="stop" disabled>Stop</button>
+    <main class="chat">
+      <div id="stream" class="stream">
+        <div class="empty">send a task to begin</div>
       </div>
-      <p id="status">Ready</p>
-
-      <h2>Activity</h2>
-      <pre id="activity-log" class="log">(no activity yet)</pre>
-
-      <h2>Accessibility tree</h2>
-      <pre id="a11y-tree" class="log">(no tree yet)</pre>
-
-      <h2>Redacted screenshots</h2>
-      <div id="screenshots" class="screenshots">(screenshots will appear here)</div>
+      <form id="input-form" class="input-bar">
+        <input id="task-input" type="text" placeholder="type a task or question" autocomplete="off" />
+        <button id="send-btn" type="submit">send</button>
+      </form>
+      <div id="status" class="status">idle</div>
     </main>
     <script src="sidepanel.js"></script>
   </body>
