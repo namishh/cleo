@@ -288,11 +288,11 @@ async function runTaskLoop(chatId) {
     }
 
     const step = ++state.step;
-    status(chatId, `Step ${step}: observing tab ${state.tabId}...`);
+    const tabId = state.tabId;
+    status(chatId, `Step ${step}: observing tab ${tabId}...`);
 
-    let tab;
     try {
-      tab = await chrome.tabs.get(state.tabId);
+      await chrome.tabs.get(tabId);
     } catch (error) {
       stopTask(chatId, "Stopped: task tab was closed");
       return;
