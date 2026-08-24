@@ -10,7 +10,9 @@ async function send(tabId, method, params = {}) {
 }
 
 function requireCoords(action) {
-  if (typeof action.x !== "number" || typeof action.y !== "number") {
+  action.x = Number(action.x);
+  action.y = Number(action.y);
+  if (!Number.isFinite(action.x) || !Number.isFinite(action.y)) {
     throw new Error(`${action.type} requires numeric x and y`);
   }
 }
@@ -61,18 +63,25 @@ async function actionMove(tabId, action) {
 }
 
 async function actionScroll(tabId, action) {
-  requireCoords(action);
-  const amount = Number.isFinite(action.amount) ? action.amount : 3;
+  // Scrolling does not need an exact target. Default to the viewport's top-left
+  // so models may return the compact form {type:"scroll", direction, amount}.
+  const x = Number.isFinite(action.x) ? action.x : 1;
+  const y = Number.isFinite(action.y) ? action.y : 1;
+  const amount = Number.isFinite(action.amount)
+    ? action.amount
+    : Number.isFinite(action.ticks)
+      ? action.ticks
+      : 3;
   const direction = action.direction === "up" ? -1 : 1;
   await send(tabId, "Input.dispatchMouseEvent", {
     type: "mouseWheel",
-    x: action.x,
-    y: action.y,
+    x,
+    y,
     deltaX: (action.deltaX || 0) * direction,
     deltaY: amount * 120 * direction,
     pointerType: "mouse",
   });
-  return `scrolled ${direction === 1 ? "down" : "up"} ${amount} tick(s)`;
+  return `scrolled ${direction === 1 ? "down" : "up"} ${amount} tick(s) at (${x}, ${y})`;
 }
 
 // Focus the element under the point first so typing goes to the right field.
@@ -212,7 +221,9 @@ async function actionKey(tabId, action) {
 
 async function actionDrag(tabId, action) {
   requireCoords(action);
-  if (typeof action.x2 !== "number" || typeof action.y2 !== "number") {
+  action.x2 = Number(action.x2);
+  action.y2 = Number(action.y2);
+  if (!Number.isFinite(action.x2) || !Number.isFinite(action.y2)) {
     throw new Error("drag requires x2 and y2");
   }
   await send(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: action.x, y: action.y, pointerType: "mouse" });

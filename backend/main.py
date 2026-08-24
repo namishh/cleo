@@ -36,24 +36,24 @@ client = OpenRouter(api_key=API_KEY)
 
 # The complete action space the model may choose from.
 ACTION_SPACE = {
-    "click": "Click at viewport pixel coordinates (CSS px).",
-    "double_click": "Double-click at coordinates.",
-    "right_click": "Right-click at coordinates.",
-    "move": "Move the mouse to coordinates (hover, open menus).",
-    "scroll": "Scroll at coordinates by a number of wheel ticks (positive = down).",
-    "type": "Type text into the currently focused element.",
-    "key": "Press a key or combo, e.g. Enter, Tab, Control+a.",
-    "drag": "Drag from one coordinate to another.",
-    "select": "Select an <option> by visible text inside a <select> at coordinates.",
-    "navigate": "Open a URL in the pinned tab.",
-    "wait": "Wait N milliseconds for the page to settle.",
+    "click": "Click a tree element by id (preferred) or viewport coordinates (CSS px). With id, x/y are optional.",
+    "double_click": "Double-click a tree element by id (preferred) or coordinates. With id, x/y are optional.",
+    "right_click": "Right-click a tree element by id (preferred) or coordinates. With id, x/y are optional.",
+    "move": "Move the mouse to a tree element by id (preferred) or coordinates. With id, x/y are optional.",
+    "scroll": "Scroll up/down by wheel ticks. x/y are optional; the extension defaults to the viewport center. Use amount (or ticks) (default 3).",
+    "type": "Type text into the currently focused element. Requires text. Optionally provide x, y to focus first.",
+    "key": "Press a key or combo, e.g. Enter, Tab, Control+a. Requires key.",
+    "drag": "Drag from one coordinate to another. Requires numeric x, y, x2, y2.",
+    "select": "Select an <option> by visible text inside a <select> at coordinates. Requires x, y and option.",
+    "navigate": "Open a URL in the pinned tab. Requires url.",
+    "wait": "Wait N milliseconds for the page to settle. Requires ms.",
     "done": "The task is complete.",
     "fail": "The task cannot be completed; include a reason.",
 }
 
 SYSTEM_PROMPT = f"""You are a browser automation agent. You receive:
 1. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them).
-2. A compact accessibility tree listing actionable elements with [id], role, name, position (x,y,w,h), state, and for links the href.
+2. A compact accessibility tree listing actionable elements with [id], role, sanitized name, position (x,y,w,h), state, and safe link href/image alt metadata.
 
 Decide the next action(s) to progress the user's task.
 
@@ -65,8 +65,11 @@ Respond with a JSON object of this exact shape:
 
 Rules:
 - "actions" is a list of 1 to 5 actions to execute in order. Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
-- Coordinates are in CSS pixels relative to the screenshot's top-left corner.
-- Prefer acting on elements from the tree by their position; use the screenshot for anything not in the tree.
+- Coordinates are in CSS pixels relative to the screenshot's top-left corner. Use the numbers inside @ (x,y,w,h) from the tree, e.g. click the center of an element.
+- Prefer an element id from the tree, e.g. {{"type":"click","id":"e12"}}; the extension resolves it to the current element center.
+- Scroll may omit x/y. The extension supplies a safe default.
+- Prefer acting on elements from the tree; use the screenshot for anything not in the tree.
+- Example response: {{"actions": [{{"type": "click", "x": 120, "y": 340}}], "note": "Clicking the submit button"}}
 - End the list with {{"type": "done"}} only when the task is fully complete.
 - Return {{"type": "fail", "reason": "..."}} if the task is impossible or you are stuck.
 - "note" is optional free text for the operator (e.g. "the submit button is disabled, waiting").
@@ -105,8 +108,9 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history) -> tuple[list
                 ],
             },
         ],
-        max_tokens=500,
+        max_tokens=800,
         temperature=0,
+        response_format={"type": "json_object"},
     )
     raw = response.choices[0].message.content or ""
     actions, note = _parse_response(raw)
@@ -136,7 +140,10 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
                 actions = None
             note = parsed.get("note") if isinstance(parsed.get("note"), str) else None
             if actions is not None:
-                return _validate_actions(actions), note
+                try:
+                    return _validate_actions(actions), note
+                except ValueError as e:
+                    return [], f"Malformed actions ({e}): {text}"
 
     # Bare list of actions?
     list_start, list_end = text.find("["), text.rfind("]")
@@ -146,7 +153,10 @@ def _parse_response(raw: str) -> tuple[list, str | None]:
         except json.JSONDecodeError:
             parsed_list = None
         if isinstance(parsed_list, list):
-            return _validate_actions(parsed_list), None
+            try:
+                return _validate_actions(parsed_list), None
+            except ValueError as e:
+                return [], f"Malformed actions ({e}): {text}"
 
     # No JSON at all — treat the whole reply as an operator note.
     return [], (raw.strip() or None)

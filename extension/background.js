@@ -105,6 +105,39 @@ async function startTask(task) {
   return taskState;
 }
 
+async function resolveActionTargets(tabId, actions, snapshot) {
+  const viewportWidth = snapshot.viewportWidth || 0;
+  const viewportHeight = snapshot.viewportHeight || 0;
+
+  return Promise.all(actions.map(async (original) => {
+    const action = { ...original };
+    const elementId = action.id || action.element_id || action.target_id;
+
+    if (elementId && (action.x === undefined || action.y === undefined)) {
+      const target = await chrome.tabs.sendMessage(tabId, {
+        action: "getElementRect",
+        id: elementId,
+      });
+      if (target?.error) throw new Error(target.error);
+      const rect = target.rect;
+      action.x = rect.x + rect.width / 2;
+      action.y = rect.y + rect.height / 2;
+      delete action.id;
+      delete action.element_id;
+      delete action.target_id;
+    }
+
+    if (action.type === "scroll") {
+      if (action.x === undefined) action.x = viewportWidth ? viewportWidth / 2 : 1;
+      if (action.y === undefined) action.y = viewportHeight ? viewportHeight / 2 : 1;
+      if (action.amount === undefined && Number.isFinite(action.ticks)) {
+        action.amount = action.ticks;
+      }
+    }
+    return action;
+  }));
+}
+
 function stopTask(reason = "Stopped") {
   const tabId = taskState.tabId;
   const wasRunning = taskState.running;
@@ -216,11 +249,12 @@ async function runTaskLoop() {
     }
 
     status(`Step ${step}: executing ${actions.length} action(s)...`);
-    let results = await executeActions(tabId, actions);
+    const executableActions = await resolveActionTargets(tabId, actions, snapshot);
+    let results = await executeActions(tabId, executableActions);
     if (results.some((result) => !result.ok && isDebuggerDetachedError(result.error))) {
       log(`Step ${step}: debugger detached; re-attaching and retrying actions`);
       await forceDebuggerAttach(tabId);
-      results = await executeActions(tabId, actions);
+      results = await executeActions(tabId, executableActions);
     }
 
     for (const result of results) {
@@ -234,16 +268,21 @@ async function runTaskLoop() {
 }
 
 async function askBackend(payload) {
-  const response = await fetch(BACKEND_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      image_b64: payload.image,
-      tree: payload.tree,
-      task: payload.task,
-      history: payload.history,
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(BACKEND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image_b64: payload.image,
+        tree: payload.tree,
+        task: payload.task,
+        history: payload.history,
+      }),
+    });
+  } catch (error) {
+    throw new Error(`Cannot reach backend at ${BACKEND_URL}; start it with 'cd backend && uv run python main.py' (${error.message})`);
+  }
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `Backend returned HTTP ${response.status}`);

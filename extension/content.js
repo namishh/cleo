@@ -326,16 +326,18 @@ function collectElements(privacyRegions = []) {
 }
 
 function formatTree(elements) {
-  const lines = elements.slice(0, 250).map((element) => {
+  const lines = [`Viewport: ${innerWidth}x${innerHeight} CSS px`];
+  lines.push(...elements.slice(0, 250).map((element) => {
     const { x, y, width, height } = element.rect;
     const state = element.state.length ? ` {${element.state.join(", ")}}` : "";
     const props = Object.entries(element.properties || {})
       .map(([key, value]) => ` ${key}=${String(value).slice(0, 120)}`)
       .join("");
     return `[${element.id}] ${element.role} "${element.name.slice(0, 120)}" @ (${x},${y},${width}x${height})${state}${props}`;
-  });
+  }));
   if (elements.length > 250) lines.push(`... (${elements.length - 250} elements omitted)`);
-  return lines.join("\n") || "(no visible actionable elements)";
+  if (elements.length === 0) lines.push("(no visible actionable elements)");
+  return lines.join("\n");
 }
 
 function getCompactAccessibilityTree() {
@@ -367,6 +369,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } catch (error) {
       sendResponse({ error: error.message });
     }
+    return false;
+  }
+
+  if (request.action === "getElementRect") {
+    const element = elementRefs.get(request.id);
+    if (!element || !isVisible(element)) {
+      sendResponse({ error: `element ${request.id} is unavailable` });
+      return false;
+    }
+    sendResponse({ rect: rectFor(element) });
     return false;
   }
 });
