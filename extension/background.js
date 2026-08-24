@@ -170,7 +170,9 @@ function stopLoop() {
   if (loopState.timer) {
     clearInterval(loopState.timer);
   }
-  if (loopState.debuggerAttached && loopState.tabId != null) {
+  // Don't yank the debugger out from under the click loop.
+  const clickLoopNeedsIt = clickLoop.running && clickLoop.tabId === loopState.tabId;
+  if (loopState.debuggerAttached && loopState.tabId != null && !clickLoopNeedsIt) {
     chrome.debugger.detach({ tabId: loopState.tabId }).catch(() => {});
   }
   loopState = {
@@ -294,10 +296,25 @@ async function startClickLoop(x, y) {
       const result = results[0];
       reportClickLoop(result.ok ? `click OK (${x}, ${y})` : `click FAILED: ${result.error}`);
     } catch (error) {
-      reportClickLoop(`click loop error: ${error.message}`);
+      const message = String(error.message);
+      if (message.includes("not attached")) {
+        // Force a fresh attach and retry once — getTargets() can report a
+        // stale "attached" entry after another loop's teardown.
+        try {
+          await chrome.debugger.attach({ tabId: clickLoop.tabId }, "1.3").catch(() => {});
+          const retry = await executeActions(clickLoop.tabId, [{ type: "click", x, y }]);
+          const result = retry[0];
+          reportClickLoop(result.ok ? `click OK after re-attach (${x}, ${y})` : `click FAILED: ${result.error}`);
+          return;
+        } catch (retryError) {
+          reportClickLoop(`click loop error after retry: ${retryError.message}`);
+        }
+      } else {
+        reportClickLoop(`click loop error: ${message}`);
+      }
       if (
-        String(error.message).includes("No tab with id") ||
-        String(error.message).includes("not attached")
+        message.includes("No tab with id") ||
+        message.includes("not attached")
       ) {
         stopClickLoop();
       }
