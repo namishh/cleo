@@ -192,16 +192,126 @@ function addStepActions(step, actions) {
   scrollToEnd();
 }
 
-function resetConversation() {
+function clearStream() {
   stepElements = new Map();
   streamEl.textContent = "";
 }
+
+// ---------- chat list ----------
+
+async function refreshChatList() {
+  const response = await chrome.runtime.sendMessage({ action: "listChats" });
+  const list = document.getElementById("chat-list");
+  list.textContent = "";
+  const active = await chrome.runtime.sendMessage({ action: "getActiveChat" });
+  const activeId = active?.chat?.id || null;
+
+  if (!response?.chats?.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-item";
+    empty.textContent = "no chats yet";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const chat of response.chats) {
+    const item = document.createElement("div");
+    item.className = `chat-item${chat.id === activeId ? " active" : ""}`;
+    item.dataset.id = chat.id;
+
+    const title = document.createElement("span");
+    title.className = "chat-title";
+    title.textContent = chat.title;
+    item.appendChild(title);
+
+    const del = document.createElement("button");
+    del.className = "chat-delete";
+    del.textContent = "x";
+    del.title = "delete chat";
+    del.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await chrome.runtime.sendMessage({ action: "deleteChat", id: chat.id });
+      if (chat.id === activeId) clearStream();
+      refreshChatList();
+    });
+    item.appendChild(del);
+
+    item.addEventListener("click", () => openChat(chat.id));
+    list.appendChild(item);
+  }
+}
+
+async function openChat(id) {
+  const response = await chrome.runtime.sendMessage({ action: "openChat", id });
+  if (response?.error) {
+    statusEl.textContent = `error: ${response.error}`;
+    return;
+  }
+  document.querySelector(".chats-menu").removeAttribute("open");
+  renderChat(response.chat);
+  refreshChatList();
+}
+
+function renderChat(chat) {
+  clearStream();
+  if (!chat) return;
+  for (const entry of chat.entries || []) {
+    if (entry.t === "user") addUserMessage(entry.text);
+    else if (entry.t === "answer") addAnswerMessage(entry.text);
+    else if (entry.t === "step") renderStepEntry(entry);
+  }
+  scrollToEnd();
+}
+
+function renderStepEntry(entry) {
+  const element = getStepElement(entry.step);
+  element.streamText.textContent = entry.streamText || "";
+  if (entry.screenshot) {
+    element.screenshot = true;
+    const img = document.createElement("img");
+    img.className = "step-screenshot";
+    img.src = entry.screenshot;
+    img.alt = `redacted screenshot, step ${entry.step}`;
+    element.body.appendChild(img);
+  }
+  if (entry.note) {
+    const note = document.createElement("div");
+    note.className = "step-note";
+    note.textContent = entry.note;
+    element.body.appendChild(note);
+  }
+  if (entry.actions?.length) {
+    const list = document.createElement("ul");
+    list.className = "step-actions";
+    for (const action of entry.actions) {
+      const item = document.createElement("li");
+      item.textContent = formatAction(action);
+      list.appendChild(item);
+    }
+    element.body.appendChild(list);
+    element.summary.textContent = `step ${entry.step} · ${formatAction(entry.actions[0])}${entry.actions.length > 1 ? ` +${entry.actions.length - 1}` : ""}`;
+  }
+}
+
+function updateChatTitle(chatId, title) {
+  refreshChatList();
+}
+
+document.getElementById("new-chat-btn").addEventListener("click", async () => {
+  const response = await chrome.runtime.sendMessage({ action: "newChat" });
+  if (response?.error) {
+    statusEl.textContent = `error: ${response.error}`;
+    return;
+  }
+  clearStream();
+  refreshChatList();
+  input.focus();
+});
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "agentEvent") {
     switch (message.kind) {
       case "user":
-        resetConversation();
         addUserMessage(message.text);
         break;
       case "step-delta":
@@ -218,6 +328,9 @@ chrome.runtime.onMessage.addListener((message) => {
         break;
       case "answer":
         addAnswerMessage(message.text);
+        break;
+      case "title":
+        updateChatTitle(message.chatId, message.title);
         break;
       case "log":
         addLogLine(message.message);
@@ -239,6 +352,12 @@ chrome.runtime.sendMessage({ action: "getTaskState" }, (state) => {
     setRunning(true);
     statusEl.textContent = `running on tab ${state.tabId}`;
   }
+});
+
+// Restore the active chat transcript on open.
+chrome.runtime.sendMessage({ action: "getActiveChat" }, async (response) => {
+  if (response?.chat) renderChat(response.chat);
+  refreshChatList();
 });
 
 form.addEventListener("submit", async (event) => {

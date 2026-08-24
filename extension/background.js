@@ -2,6 +2,8 @@ import { executeActions } from "./actions.js";
 
 const BACKEND_BASE = "http://127.0.0.1:5001";
 const MAX_STEPS = 50;
+const CHATS_KEY = "cleo_chats";
+const ACTIVE_CHAT_KEY = "cleo_activeChat";
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.log(`Cleo installed. Reason: ${reason}`);
@@ -13,6 +15,7 @@ chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error
 
 let offscreenReadyPromise = null;
 let offscreenResolve = null;
+let currentChatId = null;
 let taskState = {
   running: false,
   tabId: null,
@@ -23,6 +26,78 @@ let taskState = {
   lastTreeHash: null,
   stallCount: 0,
 };
+
+// ---------- chat store (chrome.storage.local, unlimitedStorage) ----------
+
+async function loadAllChats() {
+  const store = await chrome.storage.local.get(CHATS_KEY);
+  return store[CHATS_KEY] || {};
+}
+
+async function loadChat(id) {
+  const chats = await loadAllChats();
+  return chats[id] || null;
+}
+
+async function saveChat(chat) {
+  chat.updatedAt = Date.now();
+  const store = await chrome.storage.local.get(CHATS_KEY);
+  const chats = store[CHATS_KEY] || {};
+  chats[chat.id] = chat;
+  await chrome.storage.local.set({ [CHATS_KEY]: chats });
+}
+
+async function setActiveChatId(id) {
+  currentChatId = id;
+  await chrome.storage.local.set({ [ACTIVE_CHAT_KEY]: id });
+}
+
+async function getActiveChatId() {
+  if (currentChatId) return currentChatId;
+  const store = await chrome.storage.local.get(ACTIVE_CHAT_KEY);
+  currentChatId = store[ACTIVE_CHAT_KEY] || null;
+  return currentChatId;
+}
+
+function newChatRecord() {
+  return {
+    id: `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    entries: [],
+    taskHistory: [],
+    findings: [],
+    lastStep: 0,
+  };
+}
+
+async function appendEntry(chatId, entry) {
+  const chat = await loadChat(chatId);
+  if (!chat) return;
+  chat.entries.push({ ts: Date.now(), ...entry });
+  await saveChat(chat);
+}
+
+// ponytail: naive title generation, one call after the first user message
+async function autoTitle(chatId, text) {
+  try {
+    const response = await fetch(`${BACKEND_BASE}/title`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    const body = await response.json();
+    const chat = await loadChat(chatId);
+    if (chat && body.title) {
+      chat.title = body.title;
+      await saveChat(chat);
+      agentEvent("title", { chatId, title: body.title });
+    }
+  } catch (error) {
+    console.warn("Auto-title failed:", error);
+  }
+}
 
 function agentEvent(kind, payload = {}) {
   chrome.runtime.sendMessage({ action: "agentEvent", kind, ...payload }).catch(() => {});
@@ -45,6 +120,70 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "newChat") {
+    if (taskState.running) {
+      sendResponse({ error: "stop the agent first" });
+    } else {
+      currentChatId = null;
+      chrome.storage.local.remove(ACTIVE_CHAT_KEY);
+      sendResponse({ ok: true });
+    }
+    return false;
+  }
+
+  if (request.action === "listChats") {
+    loadAllChats().then((chats) => {
+      const list = Object.values(chats)
+        .map(({ id, title, updatedAt }) => ({ id, title: title || "untitled", updatedAt }))
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      sendResponse({ chats: list });
+    });
+    return true;
+  }
+
+  if (request.action === "openChat") {
+    if (taskState.running) {
+      sendResponse({ error: "stop the agent first" });
+      return false;
+    }
+    loadChat(request.id).then(async (chat) => {
+      if (!chat) {
+        sendResponse({ error: "chat not found" });
+        return;
+      }
+      await setActiveChatId(chat.id);
+      sendResponse({ chat });
+    });
+    return true;
+  }
+
+  if (request.action === "deleteChat") {
+    loadAllChats().then(async (chats) => {
+      delete chats[request.id];
+      await chrome.storage.local.set({ [CHATS_KEY]: chats });
+      if (currentChatId === request.id) {
+        currentChatId = null;
+        await chrome.storage.local.remove(ACTIVE_CHAT_KEY);
+      }
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (request.action === "getActiveChat") {
+    getActiveChatId().then((id) => {
+      if (!id) return sendResponse({ chat: null });
+      loadChat(id).then((chat) => sendResponse({ chat }));
+    });
+    return true;
+  }
+
+  if (request.action === "startTask") {
+    startTask(request.task)
+      .then((state) => sendResponse({ tabId: state.tabId }))
+      .catch((error) => sendResponse({ error: error.message }));
+    return true;
+  }
   if (request.action === "startTask") {
     startTask(request.task)
       .then((state) => sendResponse({ tabId: state.tabId }))
@@ -88,17 +227,32 @@ async function startTask(task) {
   if (!tab?.id) throw new Error("No active tab");
 
   await attachDebugger(tab.id);
+
+  // Continue the active chat if one exists; otherwise start a new one.
+  const chatId = await getActiveChatId();
+  let chat = chatId ? await loadChat(chatId) : null;
+  if (!chat) {
+    chat = newChatRecord();
+    await setActiveChatId(chat.id);
+  }
+  currentChatId = chat.id;
+
+  chat.entries.push({ t: "user", text: String(task).trim(), ts: Date.now() });
+  await saveChat(chat);
+  if (!chat.title) autoTitle(chat.id, task);
+
   taskState = {
     running: true,
     tabId: tab.id,
     windowId: tab.windowId,
     task: String(task).trim(),
-    step: 0,
-    history: [],
-    findings: [],
+    step: chat.lastStep || 0,
+    history: chat.taskHistory || [],
+    findings: chat.findings || [],
     lastTreeHash: null,
     stallCount: 0,
     scrollRun: 0,
+    chatId: chat.id,
   };
 
   agentEvent("user", { text: taskState.task });
@@ -252,6 +406,7 @@ async function runTaskLoop() {
     const tree = snapshot.tree || "(no accessibility data)";
     status(`Step ${step}: asking AI server...`);
 
+    const stepStreamText = [];
     const decision = await askBackendStream(
       {
         image: redacted.redactedImageUrl,
@@ -261,7 +416,10 @@ async function runTaskLoop() {
         hint,
         findings: taskState.findings,
       },
-      (delta) => agentEvent("step-delta", { step, text: delta })
+      (delta) => {
+        stepStreamText.push(delta);
+        agentEvent("step-delta", { step, text: delta });
+      }
     );
 
     if (!taskState.running) return;
@@ -292,6 +450,14 @@ async function runTaskLoop() {
     if (decision.answer) {
       // Informational reply: show it in the chat and end the run.
       agentEvent("answer", { text: decision.answer });
+      const chat = await loadChat(taskState.chatId);
+      if (chat) {
+        chat.entries.push({ t: "answer", text: decision.answer, ts: Date.now() });
+        chat.taskHistory = taskState.history;
+        chat.findings = taskState.findings;
+        chat.lastStep = taskState.step;
+        await saveChat(chat);
+      }
       stopTask("Answered");
       return;
     }
@@ -304,7 +470,22 @@ async function runTaskLoop() {
     if (actions.some((action) => action.type === "done")) {
       const done = actions.find((action) => action.type === "done");
       const summary = done.summary || done.answer || done.text;
-      if (summary) agentEvent("answer", { text: summary });
+      if (summary) {
+        agentEvent("answer", { text: summary });
+        const chat = await loadChat(taskState.chatId);
+        if (chat) {
+          chat.entries.push({ t: "answer", text: summary, ts: Date.now() });
+        }
+      }
+      if (taskState.chatId) {
+        const chat = await loadChat(taskState.chatId);
+        if (chat) {
+          chat.taskHistory = taskState.history;
+          chat.findings = taskState.findings;
+          chat.lastStep = taskState.step;
+          await saveChat(chat);
+        }
+      }
       stopTask(summary ? "Completed" : "Completed (no summary returned)");
       return;
     }
@@ -338,6 +519,24 @@ async function runTaskLoop() {
       results: results.map((result) => ({ ok: result.ok, detail: result.detail, error: result.error })),
       note: decision.note || null,
     });
+
+    // Persist the step into the chat transcript.
+    const chat = await loadChat(taskState.chatId);
+    if (chat) {
+      chat.entries.push({
+        t: "step",
+        step,
+        actions: executableActions,
+        note: decision.note || null,
+        screenshot: redacted.redactedImageUrl,
+        streamText: stepStreamText.join(""),
+        ts: Date.now(),
+      });
+      chat.taskHistory = taskState.history;
+      chat.findings = taskState.findings;
+      chat.lastStep = taskState.step;
+      await saveChat(chat);
+    }
 
     // Track scroll-only runs so endless browsing can be interrupted.
     const scrollCount = executableActions.filter((action) => action.type === "scroll").length;

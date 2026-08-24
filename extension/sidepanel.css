@@ -57,6 +57,97 @@ body {
   color: var(--dim);
 }
 
+/* topbar + chat list */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 700;
+}
+
+.topbar button,
+.chats-menu summary {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.topbar button:hover,
+.chats-menu summary:hover {
+  color: var(--fg);
+}
+
+.chats-menu {
+  position: relative;
+}
+
+.chats-menu[open] .chat-list {
+  display: block;
+}
+
+.chat-list {
+  display: none;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  z-index: 10;
+}
+
+.chat-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.chat-item:hover {
+  background: #1a1a1a;
+}
+
+.chat-item.active {
+  color: var(--fg);
+  background: #1a1a1a;
+}
+
+.chat-item .chat-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-item .chat-delete {
+  color: var(--dim);
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-item .chat-delete:hover {
+  color: #ff5555;
+}
+
 /* messages */
 .msg {
   display: flex;
