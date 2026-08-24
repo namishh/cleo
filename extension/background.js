@@ -97,6 +97,7 @@ async function startTask(task) {
     history: [],
     lastTreeHash: null,
     stallCount: 0,
+    scrollRun: 0,
   };
 
   agentEvent("user", { text: taskState.task });
@@ -121,6 +122,7 @@ function stopTask(reason = "Stopped") {
     history: [],
     lastTreeHash: null,
     stallCount: 0,
+    scrollRun: 0,
   };
 
   if (wasRunning && tabId != null) {
@@ -217,6 +219,12 @@ async function runTaskLoop() {
         "Otherwise try a different approach — e.g. scroll (the tree lists scrollable regions), " +
         "click a different element, or navigate elsewhere.";
       log(`Step ${step}: no progress detected for ${taskState.stallCount} steps; nudging model`);
+    } else if (taskState.scrollRun >= 4) {
+      hint =
+        `You have scrolled ${taskState.scrollRun} times in a row without taking any other action. ` +
+        "If the requested items are now visible, return an answer summarizing the findings " +
+        "(e.g. the top 5 with names and prices) with an empty actions list, or return done. Avoid further scrolling.";
+      log(`Step ${step}: ${taskState.scrollRun} consecutive scrolls; nudging model to conclude`);
     }
 
     const screenshot = await captureTab(tabId);
@@ -303,6 +311,12 @@ async function runTaskLoop() {
       results: results.map((result) => ({ ok: result.ok, detail: result.detail, error: result.error })),
       note: decision.note || null,
     });
+
+    // Track scroll-only runs so endless browsing can be interrupted.
+    const scrollCount = executableActions.filter((action) => action.type === "scroll").length;
+    taskState.scrollRun = scrollCount === executableActions.length && scrollCount > 0
+      ? taskState.scrollRun + scrollCount
+      : 0;
 
     if (!taskState.running) return;
     await sleep(700);

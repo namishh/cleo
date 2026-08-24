@@ -77,6 +77,8 @@ Rules:
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
 - End the list with {{"type": "done"}} only when the task is fully complete.
 - Completion check: before doing anything else, ask yourself "is the task already achieved on this screen?" If yes, return done immediately instead of continuing to act.
+- Research-style tasks (find, look for, compare, list, cheapest/best X): once the sorted/filtered results are on screen, STOP browsing and return an answer summarizing the findings — e.g. the top 5 items with names and prices — with an empty actions list. Do not keep scrolling after the requested results are visible.
+- Do not scroll endlessly. After roughly 2–3 screens of scrolling without finding new relevant content, summarize what you have found in an answer, or return fail if nothing matches.
 - If the history shows an action produced no visible change, do NOT repeat it. Change approach or return done/fail.
 - The tree may contain a "Page scroll" line and [rN] scrollable regions (filter panels, sidebars, lists). Content often exists below the fold or inside those regions: scroll the page or scroll inside a region (use its center coordinates) to reveal more options before concluding something is missing.
 - Return {{"type": "fail", "reason": "..."}} if the task is impossible or you are stuck.
