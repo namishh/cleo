@@ -75,6 +75,9 @@ Rules:
 - Example response (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
 - End the list with {{"type": "done"}} only when the task is fully complete.
+- Completion check: before doing anything else, ask yourself "is the task already achieved on this screen?" If yes, return done immediately instead of continuing to act.
+- If the history shows an action produced no visible change, do NOT repeat it. Change approach or return done/fail.
+- The tree may contain a "Page scroll" line and [rN] scrollable regions (filter panels, sidebars, lists). Content often exists below the fold or inside those regions: scroll the page or scroll inside a region (use its center coordinates) to reveal more options before concluding something is missing.
 - Return {{"type": "fail", "reason": "..."}} if the task is impossible or you are stuck.
 - "note" is optional free text for the operator (e.g. "the submit button is disabled, waiting").
 - Output ONLY the JSON object.
@@ -94,10 +97,12 @@ def _image_to_data_url(file_storage=None, b64=None) -> str:
     raise ValueError("no image provided (send 'image' file or 'image_b64' field)")
 
 
-def _ask_openrouter(image_url: str, tree: str, task: str, history) -> tuple[list, str | None]:
+def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "") -> tuple[list, str | None]:
     user_text = f"Task: {task}\n\nAccessibility tree:\n{tree}"
     if history:
         user_text += "\n\nPrevious actions:\n" + json.dumps(history, indent=2)
+    if hint:
+        user_text += f"\n\nOperator hint: {hint}"
     user_text += "\n\nDecide the next action(s)."
 
     response = client.chat.send(
@@ -207,6 +212,7 @@ def ask():
             tree = body.get("tree", "")
             task = body.get("task", "")
             history = body.get("history", [])
+            hint = body.get("hint", "")
         else:
             image_url = _image_to_data_url(
                 file_storage=request.files.get("image"),
@@ -215,11 +221,12 @@ def ask():
             tree = request.form.get("tree", "")
             task = request.form.get("task", "")
             history = json.loads(request.form.get("history", "[]"))
+            hint = request.form.get("hint", "")
 
         if not tree and not image_url:
             return jsonify({"error": "tree or image required"}), 400
 
-        actions, note = _ask_openrouter(image_url, tree, task, history)
+        actions, note = _ask_openrouter(image_url, tree, task, history, hint)
         return jsonify({"actions": actions, "note": note})
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return jsonify({"error": str(e)}), 400

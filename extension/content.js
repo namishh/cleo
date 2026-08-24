@@ -325,8 +325,22 @@ function collectElements(privacyRegions = []) {
   return elements;
 }
 
-function formatTree(elements) {
+function formatTree(elements, scroll) {
   const lines = [`Viewport: ${innerWidth}x${innerHeight} CSS px`];
+  if (scroll) {
+    lines.push(
+      `Page scroll: ${scroll.pageScrollY}px of ${scroll.pageScrollHeight}px ` +
+      `(can scroll ${scroll.pageCanScrollDown ? "down" : ""}${
+        scroll.pageCanScrollDown && scroll.pageCanScrollUp ? " and " : ""
+      }${scroll.pageCanScrollUp ? "up" : ""}${!scroll.pageCanScrollDown && !scroll.pageCanScrollUp ? "none" : ""})`
+    );
+    for (const region of scroll.regions) {
+      const { x, y, width, height } = region.rect;
+      lines.push(
+        `[${region.id}] scrollable ${region.direction} "${region.name}" @ (${x},${y},${width}x${height}) — scroll inside this region to reveal more content`
+      );
+    }
+  }
   lines.push(...elements.slice(0, 250).map((element) => {
     const { x, y, width, height } = element.rect;
     const state = element.state.length ? ` {${element.state.join(", ")}}` : "";
@@ -340,14 +354,50 @@ function formatTree(elements) {
   return lines.join("\n");
 }
 
+// Find independently-scrollable sub-containers (filter panels, sidebars,
+// lists) so the model knows where it can scroll to reveal more content.
+function collectScrollInfo() {
+  const doc = document.scrollingElement || document.documentElement;
+  const info = {
+    pageScrollY: Math.round(scrollY),
+    pageScrollHeight: Math.round(doc.scrollHeight),
+    pageCanScrollDown: scrollY + innerHeight < doc.scrollHeight - 4,
+    pageCanScrollUp: scrollY > 4,
+    regions: [],
+  };
+
+  const candidates = document.querySelectorAll("div, nav, aside, ul, ol, section, main");
+  for (const element of candidates) {
+    if (info.regions.length >= 5) break;
+    if (!isVisible(element)) continue;
+    const style = getComputedStyle(element);
+    const scrollsY = /(auto|scroll|overlay)/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 40;
+    const scrollsX = /(auto|scroll|overlay)/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 40;
+    if (!scrollsY && !scrollsX) continue;
+
+    const rect = rectFor(element);
+    if (rect.width < 40 || rect.height < 40) continue;
+
+    info.regions.push({
+      id: `r${info.regions.length + 1}`,
+      name: sanitizeText(accessibleName(element)) || element.tagName.toLowerCase(),
+      direction: scrollsY && scrollsX ? "vertical+horizontal" : scrollsY ? "vertical" : "horizontal",
+      rect,
+    });
+  }
+  return info;
+}
+
 function getCompactAccessibilityTree() {
   elementRefs = new Map();
   const privacyRegions = collectPrivacyRegions();
   const elements = collectElements(privacyRegions);
+  const scroll = collectScrollInfo();
   return {
-    tree: formatTree(elements),
+    tree: formatTree(elements, scroll),
     elements,
     privacyRegions,
+    scroll,
     viewportWidth: innerWidth,
     viewportHeight: innerHeight,
     url: location.href,

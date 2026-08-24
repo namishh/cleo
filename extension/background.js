@@ -20,6 +20,8 @@ let taskState = {
   task: "",
   step: 0,
   history: [],
+  lastTreeHash: null,
+  stallCount: 0,
 };
 
 function agentEvent(kind, payload = {}) {
@@ -93,6 +95,8 @@ async function startTask(task) {
     task: String(task).trim(),
     step: 0,
     history: [],
+    lastTreeHash: null,
+    stallCount: 0,
   };
 
   log(`Started task on tab ${tab.id}: ${taskState.task}`);
@@ -148,6 +152,8 @@ function stopTask(reason = "Stopped") {
     task: "",
     step: 0,
     history: [],
+    lastTreeHash: null,
+    stallCount: 0,
   };
 
   if (wasRunning && tabId != null) {
@@ -193,6 +199,25 @@ async function runTaskLoop() {
       log(`Step ${step}: DOM snapshot unavailable; continuing with screenshot`);
     }
 
+    // Stall detection: identical page state across steps means the previous
+    // action did nothing. Nudge the model instead of looping forever.
+    const treeHash = hashString(snapshot.tree || "");
+    if (treeHash === taskState.lastTreeHash) {
+      taskState.stallCount += 1;
+    } else {
+      taskState.stallCount = 0;
+      taskState.lastTreeHash = treeHash;
+    }
+    let hint = "";
+    if (taskState.stallCount >= 2) {
+      hint =
+        `The page has not changed for ${taskState.stallCount} consecutive steps. ` +
+        "Do NOT repeat the same action. If the task is already complete, return done. " +
+        "Otherwise try a different approach — e.g. scroll (the tree lists scrollable regions), " +
+        "click a different element, or navigate elsewhere.";
+      log(`Step ${step}: no progress detected for ${taskState.stallCount} steps; nudging model`);
+    }
+
     const screenshot = await captureTab(tabId);
     await ensureOffscreenDocument();
     status(`Step ${step}: redacting screenshot...`);
@@ -225,6 +250,7 @@ async function runTaskLoop() {
       tree,
       task,
       history: taskState.history.slice(-20),
+      hint,
     });
 
     if (!taskState.running) return;
@@ -278,6 +304,7 @@ async function askBackend(payload) {
         tree: payload.tree,
         task: payload.task,
         history: payload.history,
+        hint: payload.hint || "",
       }),
     });
   } catch (error) {
@@ -365,4 +392,12 @@ async function hasOffscreenDocument() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hashString(text) {
+  let hash = 5381;
+  for (let index = 0; index < text.length; index++) {
+    hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
+  }
+  return String(hash);
 }
