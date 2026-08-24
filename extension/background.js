@@ -250,6 +250,10 @@ async function startTask(task, requestedChatId) {
   taskStates.set(targetChat.id, state);
 
   targetChat.entries.push({ t: "user", text: state.task, ts: Date.now() });
+  if (!targetChat.customTitle) {
+    targetChat.title = titleFromMessage(state.task);
+    emit(targetChat.id, "title", { title: targetChat.title });
+  }
   await saveChat(targetChat);
 
   emit(targetChat.id, "user", { text: state.task });
@@ -596,6 +600,12 @@ function hashString(text) {
     hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
   }
   return String(hash);
+}
+
+// Chat title = first 4 words of the first message.
+function titleFromMessage(text) {
+  const words = String(text).trim().replace(/\s+/g, " ").split(" ");
+  return words.slice(0, 4).join(" ");
 }
 
 // ---------- message routing ----------
