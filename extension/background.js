@@ -4,7 +4,7 @@ const BACKEND_BASE = "http://127.0.0.1:5001";
 const MAX_STEPS = 50;
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
-  console.log(`Browser Agent installed. Reason: ${reason}`);
+  console.log(`Cleo installed. Reason: ${reason}`);
 });
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {

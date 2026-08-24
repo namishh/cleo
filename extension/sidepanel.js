@@ -17,10 +17,25 @@ function scrollToEnd() {
   streamEl.scrollTop = streamEl.scrollHeight;
 }
 
+const CLEO_ICON = chrome.runtime.getURL("icons/cleo.png");
+
+function avatar(className) {
+  const img = document.createElement("img");
+  img.className = `avatar ${className}`;
+  img.src = CLEO_ICON;
+  img.alt = "";
+  return img;
+}
+
 function addUserMessage(text) {
   const div = document.createElement("div");
   div.className = "msg user";
-  div.textContent = text;
+  const avatarEl = document.createElement("div");
+  avatarEl.className = "avatar user";
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  body.textContent = text;
+  div.append(avatarEl, body);
   streamEl.appendChild(div);
   scrollToEnd();
 }
@@ -28,7 +43,10 @@ function addUserMessage(text) {
 function addAnswerMessage(text) {
   const div = document.createElement("div");
   div.className = "msg answer";
-  div.textContent = text;
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  body.textContent = text;
+  div.append(avatar("answer"), body);
   streamEl.appendChild(div);
   scrollToEnd();
 }

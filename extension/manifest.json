@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Browser Agent Sidebar",
+  "name": "Cleo",
   "version": "1.0.0",
-  "description": "A simple hello-world Chrome side panel extension with screenshot redaction.",
+  "description": "Cleo — an AI browser agent with local PII redaction.",
   "permissions": [
     "storage",
     "tabs",

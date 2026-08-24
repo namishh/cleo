@@ -33,6 +33,24 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #333333 var(--bg);
+}
+
+.stream::-webkit-scrollbar {
+  width: 8px;
+}
+
+.stream::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+.stream::-webkit-scrollbar-thumb {
+  background: #333333;
+}
+
+.stream::-webkit-scrollbar-thumb:hover {
+  background: #444444;
 }
 
 .empty {
@@ -41,23 +59,36 @@ body {
 
 /* messages */
 .msg {
+  display: flex;
+  gap: 8px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.msg.user {
+.avatar {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+}
+
+.avatar.user {
+  background: linear-gradient(135deg, #4f46e5, #9333ea);
+}
+
+.msg-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.msg.user .msg-body {
   color: var(--dim);
 }
 
-.msg.user::before {
-  content: "> ";
-  color: var(--dim);
-}
-
-.msg.answer::before {
-  content: "agent: ";
+.msg.answer .msg-body::before {
+  content: "cleo: ";
   color: var(--dim);
 }
 
