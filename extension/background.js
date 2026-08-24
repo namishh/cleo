@@ -123,8 +123,8 @@ async function appendEntry(chatId, entry) {
 
 // ponytail: title = first 12 chars of the first message
 function titleFromMessage(text) {
-  const cleaned = String(text).trim().replace(/\s+/g, " ");
-  return cleaned.length <= 12 ? cleaned : cleaned.slice(0, 12).trimEnd();
+  const words = String(text).trim().replace(/\s+/g, " ").split(" ");
+  return words.slice(0, 4).join(" ");
 }
 
 function agentEvent(kind, payload = {}) {
