@@ -288,34 +288,29 @@ async function startClickLoop(x, y) {
 
   const tick = async () => {
     if (!clickLoop.running) return;
+    const clickAction = [{ type: "click", x, y }];
     try {
-      // Self-heal: anything may have detached us (infobar dismissed, previous
-      // auto-detach timer). Re-attach cheaply before every click.
       await ensureDebuggerAttached(clickLoop.tabId);
-      const results = await executeActions(clickLoop.tabId, [{ type: "click", x, y }]);
+      const results = await executeActions(clickLoop.tabId, clickAction);
       const result = results[0];
-      reportClickLoop(result.ok ? `click OK (${x}, ${y})` : `click FAILED: ${result.error}`);
+      if (result.ok) {
+        reportClickLoop(`click OK (${x}, ${y})`);
+      } else if (String(result.error).includes("not attached")) {
+        reportClickLoop("click loop: debugger dropped, re-attaching...");
+        // Per-action errors never reach the catch below, so handle them here:
+        // drop any stale session, attach fresh, and retry once.
+        await chrome.debugger.detach({ tabId: clickLoop.tabId }).catch(() => {});
+        await chrome.debugger.attach({ tabId: clickLoop.tabId }, "1.3");
+        const retry = await executeActions(clickLoop.tabId, clickAction);
+        const retryResult = retry[0];
+        reportClickLoop(retryResult.ok ? `click OK after re-attach (${x}, ${y})` : `click FAILED after re-attach: ${retryResult.error}`);
+      } else {
+        reportClickLoop(`click FAILED: ${result.error}`);
+      }
     } catch (error) {
       const message = String(error.message);
-      if (message.includes("not attached")) {
-        // Force a fresh attach and retry once — getTargets() can report a
-        // stale "attached" entry after another loop's teardown.
-        try {
-          await chrome.debugger.attach({ tabId: clickLoop.tabId }, "1.3").catch(() => {});
-          const retry = await executeActions(clickLoop.tabId, [{ type: "click", x, y }]);
-          const result = retry[0];
-          reportClickLoop(result.ok ? `click OK after re-attach (${x}, ${y})` : `click FAILED: ${result.error}`);
-          return;
-        } catch (retryError) {
-          reportClickLoop(`click loop error after retry: ${retryError.message}`);
-        }
-      } else {
-        reportClickLoop(`click loop error: ${message}`);
-      }
-      if (
-        message.includes("No tab with id") ||
-        message.includes("not attached")
-      ) {
+      reportClickLoop(`click loop error: ${message}`);
+      if (message.includes("No tab with id")) {
         stopClickLoop();
       }
     }
