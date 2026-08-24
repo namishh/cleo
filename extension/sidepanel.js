@@ -6,6 +6,7 @@ const statusEl = document.getElementById("status");
 
 let running = false;
 let stepElements = new Map();
+let currentStepsBlock = null;
 
 function setRunning(value) {
   running = value;
@@ -107,29 +108,35 @@ function formatAction(action) {
   }
 }
 
-function getOrCreateStepsBlock() {
-  let wrapper = document.getElementById("steps-block");
-  if (!wrapper) {
-    wrapper = document.createElement("details");
-    wrapper.id = "steps-block";
-    wrapper.className = "steps";
-    wrapper.open = true;
-    const summary = document.createElement("summary");
-    summary.textContent = "reasoning";
-    const list = document.createElement("div");
-    list.id = "steps-list";
-    wrapper.append(summary, list);
-    streamEl.appendChild(wrapper);
-  }
-  const count = stepElements.size + 1;
-  wrapper.querySelector("summary").textContent = `reasoning · ${count} steps`;
-  return wrapper.querySelector("#steps-list");
+function startNewStepsBlock() {
+  const wrapper = document.createElement("details");
+  wrapper.className = "steps";
+  wrapper.open = true;
+  const summary = document.createElement("summary");
+  summary.textContent = "reasoning · 0 steps";
+  const list = document.createElement("div");
+  list.className = "steps-list";
+  wrapper.append(summary, list);
+  streamEl.appendChild(wrapper);
+  currentStepsBlock = { wrapper, summary, list, count: 0 };
+  scrollToEnd();
+}
+
+function getStepsList() {
+  if (!currentStepsBlock) startNewStepsBlock();
+  return currentStepsBlock.list;
+}
+
+function incrementStepCount() {
+  currentStepsBlock.count += 1;
+  currentStepsBlock.summary.textContent = `reasoning · ${currentStepsBlock.count} steps`;
 }
 
 function getStepElement(step) {
   if (stepElements.has(step)) return stepElements.get(step);
 
-  const list = getOrCreateStepsBlock();
+  const list = getStepsList();
+  incrementStepCount();
   const details = document.createElement("details");
   details.className = "step";
   details.open = true;
@@ -194,6 +201,7 @@ function addStepActions(step, actions) {
 
 function clearStream() {
   stepElements = new Map();
+  currentStepsBlock = null;
   streamEl.textContent = "";
 }
 
@@ -271,9 +279,14 @@ function renderChat(chat) {
   clearStream();
   if (!chat) return;
   for (const entry of chat.entries || []) {
-    if (entry.t === "user") addUserMessage(entry.text);
-    else if (entry.t === "answer") addAnswerMessage(entry.text);
-    else if (entry.t === "step") renderStepEntry(entry);
+    if (entry.t === "user") {
+      addUserMessage(entry.text);
+      startNewStepsBlock();
+    } else if (entry.t === "answer") {
+      addAnswerMessage(entry.text);
+    } else if (entry.t === "step") {
+      renderStepEntry(entry);
+    }
   }
   scrollToEnd();
 }
@@ -331,6 +344,7 @@ chrome.runtime.onMessage.addListener((message) => {
     switch (message.kind) {
       case "user":
         addUserMessage(message.text);
+        startNewStepsBlock();
         break;
       case "step-delta":
         appendStepDelta(message.step, message.text);
