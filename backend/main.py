@@ -306,31 +306,6 @@ def ask_stream():
     )
 
 
-@app.post("/title")
-def title():
-    """Generate a short chat title from the user's first message."""
-    try:
-        text = (request.get_json(force=True).get("text") or "")[:500]
-        if not text.strip():
-            return jsonify({"title": "New chat"})
-        response = client.chat.send(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "Return a 2-5 word title summarizing the user's request. Output only the title, no quotes, no punctuation at the end.",
-                },
-                {"role": "user", "content": text},
-            ],
-            max_tokens=24,
-            temperature=0,
-        )
-        title = (response.choices[0].message.content or "New chat").strip().strip('"').strip()
-        return jsonify({"title": title[:60] or "New chat"})
-    except Exception as e:
-        return jsonify({"title": "New chat", "error": str(e)})
-
-
 @app.get("/health")
 def health():
     return jsonify({"ok": True, "model": MODEL})

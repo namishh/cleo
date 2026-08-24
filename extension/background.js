@@ -89,25 +89,10 @@ async function appendEntry(chatId, entry) {
   await saveChat(chat);
 }
 
-// ponytail: naive title generation, one call after the first user message
-async function autoTitle(chatId, text) {
-  try {
-    const response = await fetch(`${BACKEND_BASE}/title`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const body = await response.json();
-    const chat = await loadChat(chatId);
-    if (chat && body.title) {
-      chat.title = body.title;
-      chat.customTitle = true;
-      await saveChat(chat);
-      agentEvent("title", { chatId, title: body.title });
-    }
-  } catch (error) {
-    console.warn("Auto-title failed:", error);
-  }
+// ponytail: title = first 12 chars of the first message
+function titleFromMessage(text) {
+  const cleaned = String(text).trim().replace(/\s+/g, " ");
+  return cleaned.length <= 12 ? cleaned : cleaned.slice(0, 12).trimEnd();
 }
 
 function agentEvent(kind, payload = {}) {
@@ -250,8 +235,11 @@ async function startTask(task) {
   currentChatId = chat.id;
 
   chat.entries.push({ t: "user", text: String(task).trim(), ts: Date.now() });
+  if (!chat.customTitle) {
+    chat.title = titleFromMessage(task);
+    agentEvent("title", { chatId: chat.id, title: chat.title });
+  }
   await saveChat(chat);
-  if (!chat.customTitle) autoTitle(chat.id, task);
 
   taskState = {
     running: true,

@@ -308,6 +308,17 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
   input.focus();
 });
 
+// Refresh the list every time the dropdown opens, close it on outside clicks.
+const chatsMenu = document.querySelector(".chats-menu");
+chatsMenu.addEventListener("toggle", () => {
+  if (chatsMenu.open) refreshChatList();
+});
+document.addEventListener("click", (event) => {
+  if (chatsMenu.open && !chatsMenu.contains(event.target)) {
+    chatsMenu.removeAttribute("open");
+  }
+});
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === "agentEvent") {
     switch (message.kind) {
