@@ -47,9 +47,11 @@ ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
 // load reliably).
 ort.env.wasm.numThreads = 1;
 
+let currentJobChatId = null;
+
 function reportProgress(percent, message) {
   chrome.runtime
-    .sendMessage({ action: "progress", percent, message })
+    .sendMessage({ action: "progress", percent, message, chatId: currentJobChatId })
     .catch(() => {});
 }
 
@@ -603,6 +605,7 @@ async function redactImage(
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "processScreenshot") {
     console.log("Offscreen received processScreenshot request");
+    currentJobChatId = request.chatId || null;
     redactImage(
       request.imageUrl,
       request.targetName,

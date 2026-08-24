@@ -162,6 +162,13 @@ body {
   color: var(--fg);
 }
 
+.chat-item .chat-spinner {
+  flex: 0 0 auto;
+  color: var(--fg);
+  min-width: 34px;
+  text-align: center;
+}
+
 .chat-item .chat-title {
   flex: 1;
   overflow: hidden;

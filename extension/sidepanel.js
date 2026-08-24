@@ -3,15 +3,20 @@ const form = document.getElementById("input-form");
 const input = document.getElementById("task-input");
 const sendBtn = document.getElementById("send-btn");
 const statusEl = document.getElementById("status");
+const chatsSidebar = document.getElementById("chats-sidebar");
 
 let running = false;
 let stepElements = new Map();
 let currentStepsBlock = null;
+let activeChatId = null;
+const runningChats = new Set();
+
+const SPIN_FRAMES = ["[/]", "[-]", "[\\]", "[_]"];
+let spinIndex = 0;
 
 function setRunning(value) {
   running = value;
   sendBtn.textContent = value ? "stop" : "send";
-  input.disabled = false;
 }
 
 function scrollToEnd() {
@@ -44,12 +49,11 @@ function addUserMessage(text) {
 function sanitizeMarkdownHTML(html) {
   const template = document.createElement("template");
   template.innerHTML = html;
-  const dangerous = template.content.querySelectorAll("script, style, iframe, object, embed, link, meta");
-  dangerous.forEach((node) => node.remove());
+  template.content.querySelectorAll("script, style, iframe, object, embed, link, meta").forEach((node) => node.remove());
   template.content.querySelectorAll("*").forEach((node) => {
     for (const attr of [...node.attributes]) {
       const name = attr.name.toLowerCase();
-      if (name.startsWith("on") || (name === "href" || name === "src") && /^\s*javascript:/i.test(attr.value)) {
+      if (name.startsWith("on") || ((name === "href" || name === "src") && /^\s*javascript:/i.test(attr.value))) {
         node.removeAttribute(attr.name);
       }
     }
@@ -99,6 +103,8 @@ function formatAction(action) {
       return `NAVIGATE ${action.url ?? ""}`;
     case "wait":
       return `WAIT ${action.ms ?? 0}ms`;
+    case "remember":
+      return `REMEMBER "${action.fact ?? ""}"`;
     case "done":
       return "DONE";
     case "fail":
@@ -108,6 +114,7 @@ function formatAction(action) {
   }
 }
 
+// Each user message starts a fresh reasoning accordion.
 function startNewStepsBlock() {
   const wrapper = document.createElement("details");
   wrapper.className = "steps";
@@ -118,7 +125,7 @@ function startNewStepsBlock() {
   list.className = "steps-list";
   wrapper.append(summary, list);
   streamEl.appendChild(wrapper);
-  currentStepsBlock = { wrapper, summary, list, count: 0 };
+  currentStepsBlock = { summary, list, count: 0 };
   scrollToEnd();
 }
 
@@ -183,13 +190,19 @@ function addStepNote(step, note) {
   scrollToEnd();
 }
 
-function addStepActions(step, actions) {
+function addStepActions(step, actions, results) {
   const element = getStepElement(step);
   const list = document.createElement("ul");
   list.className = "step-actions";
   for (const action of actions) {
     const item = document.createElement("li");
     item.textContent = formatAction(action);
+    if (results) {
+      const result = results.find(
+        (r) => r.action && JSON.stringify(r.action) === JSON.stringify(action)
+      );
+      if (result && !result.ok) item.classList.add("failed");
+    }
     list.appendChild(item);
   }
   element.body.appendChild(list);
@@ -207,8 +220,6 @@ function clearStream() {
 
 // ---------- chat sidebar ----------
 
-const chatsSidebar = document.getElementById("chats-sidebar");
-
 document.getElementById("sidebar-toggle-btn").addEventListener("click", () => {
   chatsSidebar.classList.toggle("open");
   if (chatsSidebar.classList.contains("open")) refreshChatList();
@@ -222,12 +233,18 @@ let refreshSeq = 0;
 async function refreshChatList() {
   const seq = ++refreshSeq;
   const response = await chrome.runtime.sendMessage({ action: "listChats" });
-  if (seq !== refreshSeq) return; // a newer refresh superseded this one
+  if (seq !== refreshSeq) return;
   const list = document.getElementById("chat-list");
   list.textContent = "";
   const active = await chrome.runtime.sendMessage({ action: "getActiveChat" });
   if (seq !== refreshSeq) return;
   const activeId = active?.chat?.id || null;
+
+  // Track which chats are running for the spinners.
+  runningChats.clear();
+  for (const chat of response?.chats || []) {
+    if (chat.running) runningChats.add(chat.id);
+  }
 
   if (!response?.chats?.length) {
     const empty = document.createElement("div");
@@ -242,6 +259,12 @@ async function refreshChatList() {
     item.className = `chat-item${chat.id === activeId ? " active" : ""}`;
     item.dataset.id = chat.id;
 
+    const spinner = document.createElement("span");
+    spinner.className = "chat-spinner";
+    spinner.textContent = chat.running ? SPIN_FRAMES[0] : "";
+    if (!chat.running) spinner.style.display = "none";
+    item.appendChild(spinner);
+
     const title = document.createElement("span");
     title.className = "chat-title";
     title.textContent = chat.title;
@@ -254,7 +277,7 @@ async function refreshChatList() {
     del.addEventListener("click", async (event) => {
       event.stopPropagation();
       await chrome.runtime.sendMessage({ action: "deleteChat", id: chat.id });
-      if (chat.id === activeId) clearStream();
+      if (chat.id === activeChatId) clearStream();
       refreshChatList();
     });
     item.appendChild(del);
@@ -264,6 +287,24 @@ async function refreshChatList() {
   }
 }
 
+// Animate spinners for running chats.
+setInterval(() => {
+  if (runningChats.size === 0) return;
+  spinIndex = (spinIndex + 1) % SPIN_FRAMES.length;
+  const frame = SPIN_FRAMES[spinIndex];
+  document.querySelectorAll("#chat-list .chat-item").forEach((item) => {
+    const spinner = item.querySelector(".chat-spinner");
+    if (!spinner) return;
+    const id = item.dataset.id;
+    if (runningChats.has(id)) {
+      spinner.style.display = "";
+      spinner.textContent = frame;
+    } else {
+      spinner.style.display = "none";
+    }
+  });
+}, 250);
+
 async function openChat(id) {
   const response = await chrome.runtime.sendMessage({ action: "openChat", id });
   if (response?.error) {
@@ -271,8 +312,12 @@ async function openChat(id) {
     return;
   }
   chatsSidebar.classList.remove("open");
+  activeChatId = id;
+  running = response.running || false;
   renderChat(response.chat);
   refreshChatList();
+  setRunning(running);
+  statusEl.textContent = running ? "running…" : "idle";
 }
 
 function renderChat(chat) {
@@ -309,23 +354,11 @@ function renderStepEntry(entry) {
     element.body.appendChild(note);
   }
   if (entry.actions?.length) {
-    const list = document.createElement("ul");
-    list.className = "step-actions";
-    for (const action of entry.actions) {
-      const item = document.createElement("li");
-      item.textContent = formatAction(action);
-      if (entry.results) {
-        const result = entry.results.find((r) => r.action && JSON.stringify(r.action) === JSON.stringify(action));
-        if (result && !result.ok) item.classList.add("failed");
-      }
-      list.appendChild(item);
-    }
-    element.body.appendChild(list);
-    element.summary.textContent = `step ${entry.step} · ${formatAction(entry.actions[0])}${entry.actions.length > 1 ? ` +${entry.actions.length - 1}` : ""}`;
+    addStepActions(entry.step, entry.actions, entry.results);
   }
 }
 
-function updateChatTitle(chatId, title) {
+function updateChatTitle() {
   refreshChatList();
 }
 
@@ -335,12 +368,20 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
     statusEl.textContent = `error: ${response.error}`;
     return;
   }
-  renderChat(response.chat);
+  activeChatId = response.chat.id;
+  running = false;
+  clearStream();
   refreshChatList();
   input.focus();
 });
+
 chrome.runtime.onMessage.addListener((message) => {
+  // Only render live events that belong to the chat currently on screen.
   if (message.action === "agentEvent") {
+    if (message.chatId && message.chatId !== activeChatId) {
+      if (message.kind === "answer") refreshChatList();
+      return;
+    }
     switch (message.kind) {
       case "user":
         addUserMessage(message.text);
@@ -360,9 +401,10 @@ chrome.runtime.onMessage.addListener((message) => {
         break;
       case "answer":
         addAnswerMessage(message.text);
+        refreshChatList();
         break;
       case "title":
-        updateChatTitle(message.chatId, message.title);
+        updateChatTitle();
         break;
       case "log":
         addLogLine(message.message);
@@ -374,12 +416,18 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 
   if (message.action === "taskStopped") {
+    if (message.chatId && message.chatId !== activeChatId) {
+      refreshChatList();
+      return;
+    }
     setRunning(false);
     statusEl.textContent = message.reason || "stopped";
+    refreshChatList();
   }
 });
 
 chrome.runtime.sendMessage({ action: "getTaskState" }, (state) => {
+  (state?.runningChatIds || []).forEach((id) => runningChats.add(id));
   if (state?.running) {
     setRunning(true);
     statusEl.textContent = `running on tab ${state.tabId}`;
@@ -388,7 +436,12 @@ chrome.runtime.sendMessage({ action: "getTaskState" }, (state) => {
 
 // Restore the active chat transcript on open.
 chrome.runtime.sendMessage({ action: "getActiveChat" }, async (response) => {
-  if (response?.chat) renderChat(response.chat);
+  if (response?.chat) {
+    activeChatId = response.chat.id;
+    renderChat(response.chat);
+    setRunning(response.running || false);
+    statusEl.textContent = response.running ? "running…" : "idle";
+  }
   refreshChatList();
 });
 
@@ -397,7 +450,7 @@ form.addEventListener("submit", async (event) => {
   const task = input.value.trim();
 
   if (running) {
-    await chrome.runtime.sendMessage({ action: "stopTask" });
+    await chrome.runtime.sendMessage({ action: "stopTask", chatId: activeChatId });
     setRunning(false);
     statusEl.textContent = "stopped";
     return;
@@ -412,12 +465,18 @@ form.addEventListener("submit", async (event) => {
   sendBtn.disabled = true;
   statusEl.textContent = "starting...";
   try {
-    const response = await chrome.runtime.sendMessage({ action: "startTask", task });
+    const response = await chrome.runtime.sendMessage({
+      action: "startTask",
+      task,
+      chatId: activeChatId,
+    });
     if (response?.error) {
       statusEl.textContent = `error: ${response.error}`;
     } else {
+      activeChatId = response.chatId;
       setRunning(true);
       statusEl.textContent = `running on tab ${response.tabId}`;
+      refreshChatList();
       input.value = "";
     }
   } catch (error) {
