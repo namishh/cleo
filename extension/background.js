@@ -631,10 +631,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "newChat") {
-    if ([...taskStates.values()].some((s) => s.running)) {
-      sendResponse({ error: "stop running chats first" });
-      return false;
-    }
+    // Parallel chats are supported: creating a new chat never disturbs
+    // running ones.
     (async () => {
       const chat = await newChatRecord();
       await saveChat(chat);
