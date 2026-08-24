@@ -463,26 +463,8 @@ async function runTaskLoop() {
     agentEvent("step-actions", { step, actions });
     log(`Step ${step}: server returned ${actions.length} action(s)`);
 
-    // remember actions record facts for the final summary; they never touch
-    // the browser. If a step only remembers, nothing else executes.
-    if (actions.some((action) => action.type === "remember")) {
-      for (const action of actions.filter((action) => action.type === "remember")) {
-        if (action.fact) {
-          taskState.findings.push(action.fact);
-          log(`Step ${step}: remembered — ${action.fact}`);
-        }
-      }
-      actions = actions.filter((action) => action.type !== "remember");
-      if (actions.length === 0) {
-        taskState.history.push({ step, actions: [], results: [{ ok: true, detail: "remembered" }] });
-        await sleep(200);
-        continue;
-      }
-      agentEvent("step-actions", { step, actions });
-    }
-
     // Persist the step (reasoning, screenshot, actions) immediately so it
-    // survives even if the run ends on this step.
+    // survives even if this step takes an early exit.
     taskState.history.push({ step, actions, note: decision.note || null });
     const stepChat = await loadChat(taskState.chatId);
     if (stepChat) {
@@ -499,6 +481,23 @@ async function runTaskLoop() {
       stepChat.findings = taskState.findings;
       stepChat.lastStep = taskState.step;
       await saveChat(stepChat);
+    }
+
+    // remember actions record facts for the final summary; they never touch
+    // the browser. If a step only remembers, nothing else executes.
+    if (actions.some((action) => action.type === "remember")) {
+      for (const action of actions.filter((action) => action.type === "remember")) {
+        if (action.fact) {
+          taskState.findings.push(action.fact);
+          log(`Step ${step}: remembered — ${action.fact}`);
+        }
+      }
+      actions = actions.filter((action) => action.type !== "remember");
+      if (actions.length === 0) {
+        await sleep(200);
+        continue;
+      }
+      agentEvent("step-actions", { step, actions });
     }
 
     if (decision.answer) {
