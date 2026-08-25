@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Browser Agent Options</title>
+    <title>Cleo Options</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -12,11 +12,25 @@
         margin: 0 auto;
       }
       h1 { font-size: 20px; }
-      p { color: #6b7280; }
+      label { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0; }
+      p.hint { color: #6b7280; font-size: 13px; margin: 4px 0 0 24px; }
     </style>
   </head>
   <body>
     <h1>Options</h1>
-    <p>Nothing to configure yet.</p>
+
+    <label>
+      <input type="checkbox" id="pii-strict" />
+      <span>Strict PII redaction</span>
+    </label>
+    <p class="hint">
+      Always redacted: emails, phone numbers, passwords, card/bank/ID numbers.
+      Strict mode additionally redacts names, usernames, companies, locations
+      and dates — enable it when the agent handles documents full of other
+      people's personal data.
+    </p>
+
+    <p id="saved">​</p>
+    <script src="options.js"></script>
   </body>
 </html>

@@ -32,6 +32,15 @@ const STOP_LABELS = new Set([
   "details", "personal", "information",
 ]);
 
+// Labels only redacted in strict mode. These fire constantly on content the
+// operator is merely reading (names in PDFs, usernames, city names) and are
+// not identifying on their own; credentials/contacts/IDs always redact.
+const STRICT_ONLY_TYPES = new Set([
+  "FIRSTNAME", "SURNAME", "USERNAME", "COMPANYNAME", "URL",
+  "CITY", "STATE", "COUNTRY", "STREET", "BUILDINGNUM", "ZIP",
+  "AGE", "DATEOFBIRTH",
+]);
+
 let faceSession = null;
 let kijiSession = null;
 let kijiTokenizer = null;
@@ -302,7 +311,12 @@ function softmax(values) {
   return exps.map((value) => value / total);
 }
 
-async function detectKijiPii(words) {
+async function getPiiStrict() {
+  const { piiStrict } = await chrome.storage.local.get("piiStrict");
+  return !!piiStrict;
+}
+
+async function detectKijiPii(words, strict) {
   if (!words.length) return [];
 
   const tokenizer = await getKijiTokenizer();
@@ -369,7 +383,11 @@ async function detectKijiPii(words) {
         }
       }
     }
-    predictions.push(best.score >= threshold ? best : { label: "O", score: best.score });
+    // Non-strict mode drops read-only-context labels (names, usernames,
+    // locations...) — they are the bulk of the false positives.
+    const type = best.label.includes("-") ? best.label.split("-")[1] : null;
+    const allowed = strict || !type || !STRICT_ONLY_TYPES.has(type);
+    predictions.push(best.score >= threshold && allowed ? best : { label: "O", score: best.score });
   }
 
   const regions = [];
@@ -418,9 +436,10 @@ async function findPiiRegions(imageUrl, origW, origH) {
   const words = result.data.words || [];
 
   reportProgress(75, "Running Kiji PII model...");
+  const strict = await getPiiStrict();
   let regions = [];
   try {
-    regions = await detectKijiPii(words);
+    regions = await detectKijiPii(words, strict);
     console.log(`Kiji PII regions found: ${regions.length}`);
   } catch (error) {
     // Regex/label checks below remain the fallback if the model assets or
@@ -452,13 +471,14 @@ async function findPiiRegions(imageUrl, origW, origH) {
       ]);
     }
 
-    // Regex-based redaction on individual words.
+    // Regex-based redaction on individual words. Dates only redact in
+    // strict mode — article/PDF dates are common false positives.
     for (const w of group) {
       const text = w.text.trim();
       if (
         EMAIL_RE.test(text) ||
         PHONE_RE.test(text) ||
-        DATE_RE.test(text)
+        (strict && DATE_RE.test(text))
       ) {
         regions.push([w.bbox.x0, w.bbox.y0, w.bbox.x1, w.bbox.y1]);
       }
