@@ -872,6 +872,62 @@ chrome.tabs.onCreated.addListener((tab) => {
   }
 });
 
+// open_tab / switch_tab / close_tab mutate the chat's tab pool and always
+// change which tab the next observation step captures, so the caller lets
+// the loop continue instead of executing further actions.
+function parsePoolRef(state, ref) {
+  const index = parseInt(String(ref ?? "").replace(/^t/i, ""), 10) - 1;
+  if (!Number.isInteger(index) || index < 0 || index >= state.tabs.length) {
+    throw new Error(
+      `unknown tab "${ref ?? ""}". Pool: ${state.tabs.map((_, i) => `t${i + 1}`).join(", ")}`
+    );
+  }
+  return index;
+}
+
+async function switchPoolTab(state, tabId) {
+  if (state.tabId !== tabId) {
+    await attachDebugger(tabId);
+    chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
+  }
+  state.tabId = tabId;
+  state.currentTab = tabId;
+  await waitForTabLoad(tabId, 10000);
+}
+
+async function handleTabPoolAction(state, action) {
+  if (action.type === "open_tab") {
+    if (!action.url) throw new Error("open_tab requires url");
+    let url = action.url;
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    const tab = await chrome.tabs.create({ url, active: false });
+    state.tabs.push(tab.id);
+    await switchPoolTab(state, tab.id);
+    return `opened t${state.tabs.length} (tab ${tab.id}): ${url}`;
+  }
+
+  if (action.type === "switch_tab") {
+    const index = parsePoolRef(state, action.tab);
+    await switchPoolTab(state, state.tabs[index]);
+    return `switched to t${index + 1} (tab ${state.tabId})`;
+  }
+
+  if (action.type === "close_tab") {
+    const index = action.tab != null ? parsePoolRef(state, action.tab) : state.tabs.indexOf(state.currentTab);
+    const closing = state.tabs[index];
+    state.tabs.splice(index, 1);
+    chrome.debugger.detach({ tabId: closing }).catch(() => {});
+    await chrome.tabs.remove(closing).catch(() => {});
+    if (state.tabId === closing) {
+      if (!state.tabs.length) throw new Error("closed the last pool tab; task cannot continue");
+      await switchPoolTab(state, state.tabs[0]);
+    }
+    return `closed t${index + 1} (tab ${closing})`;
+  }
+
+  throw new Error(`unknown tab pool action: ${action.type}`);
+}
+
 async function adoptNewTab(state, newTabId) {
   const oldTabId = state.tabId;
   log(state.chatId, `Page opened a new tab; switching task to tab ${newTabId}`);
