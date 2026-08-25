@@ -535,6 +535,13 @@ function findValueToRightOfBox(labelBox, words, rowTol = 20, maxGap = 700) {
   };
 }
 
+async function copyImageToClipboard(dataUrl) {
+  const blob = await (await fetch(dataUrl)).blob();
+  // ClipboardItem requires PNG for images.
+  const pngBlob = blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" });
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+}
+
 async function redactImage(
   imageUrl,
   targetName,
@@ -603,6 +610,29 @@ async function redactImage(
 
 // Register message listener immediately.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "copyImageToClipboard") {
+    copyImageToClipboard(request.dataUrl)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
+  if (request.action === "copyTextToClipboard") {
+    navigator.clipboard
+      .writeText(request.text)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
+  if (request.action === "readClipboardText") {
+    navigator.clipboard
+      .readText()
+      .then((text) => sendResponse({ text }))
+      .catch((err) => sendResponse({ error: err.message || String(err) }));
+    return true;
+  }
+
   if (request.action === "processScreenshot") {
     console.log("Offscreen received processScreenshot request");
     currentJobChatId = request.chatId || null;

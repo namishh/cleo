@@ -439,6 +439,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return false;
   }
 
+  if (request.action === "scrollIntoView") {
+    const element = elementRefs.get(request.id);
+    if (!element) {
+      sendResponse({ error: `element ${request.id} is unavailable` });
+      return false;
+    }
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Give smooth scrolling a beat, then report the new position.
+    setTimeout(() => {
+      if (!isVisible(element)) {
+        sendResponse({ error: `element ${request.id} still not visible after scrolling` });
+        return;
+      }
+      sendResponse({ rect: rectFor(element) });
+    }, 400);
+    return true;
+  }
+
   if (request.action === "getResourceUrl") {
     const element = elementRefs.get(request.id);
     if (!element) {

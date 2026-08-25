@@ -297,6 +297,101 @@ async function actionNavigate(tabId, action) {
   return `navigating to ${url}`;
 }
 
+// Capture the tab and either copy the image to the clipboard or save it.
+// Runs in the page context via a content-script message so the clipboard
+// write happens with a user-gesture-adjacent trusted path (navigator.clipboard
+// in extension pages cannot write images directly).
+async function actionScreenshot(tabId, action) {
+  const result = await chrome.debugger.sendCommand(
+    { tabId },
+    "Page.captureScreenshot",
+    { format: "png", fromSurface: false }
+  );
+  const dataUrl = `data:image/png;base64,${result.data}`;
+
+  if (action.clipboard) {
+    // Write PNG bytes to the system clipboard via the offscreen document.
+    const response = await chrome.runtime.sendMessage({
+      action: "copyImageToClipboard",
+      dataUrl,
+    });
+    if (response?.error) throw new Error(response.error);
+    return "screenshot copied to clipboard";
+  }
+
+  const filename = action.filename || `screenshot_${Date.now()}.png`;
+  await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+  return `screenshot saved as ${filename}`;
+}
+
+async function actionCopyToClipboard(action) {
+  if (typeof action.text !== "string") throw new Error("copy_to_clipboard requires text");
+  const response = await chrome.runtime.sendMessage({
+    action: "copyTextToClipboard",
+    text: action.text,
+  });
+  if (response?.error) throw new Error(response.error);
+  return `copied ${action.text.length} character(s) to clipboard`;
+}
+
+async function actionPasteFromClipboard(tabId, action) {
+  const response = await chrome.runtime.sendMessage({ action: "readClipboardText" });
+  if (response?.error) throw new Error(response.error);
+  const text = response.text;
+  if (!text) throw new Error("clipboard is empty or contains no text");
+  if (action.x !== undefined && action.y !== undefined) {
+    await focusAt(tabId, action.x, action.y);
+  }
+  await send(tabId, "Input.insertText", { text });
+  return `pasted ${text.length} character(s) from clipboard`;
+}
+
+async function actionScrollIntoView(tabId, action) {
+  if (!action.id) throw new Error("scroll_into_view requires an element id");
+  const response = await chrome.tabs.sendMessage(tabId, {
+    action: "scrollIntoView",
+    id: action.id,
+  });
+  if (response?.error) throw new Error(response.error);
+  const { x, y, width, height } = response.rect;
+  return `scrolled element ${action.id} into view at (${x},${y},${width}x${height})`;
+}
+
+async function actionHover(tabId, action) {
+  let { x, y } = action;
+  if (action.id && (x === undefined || y === undefined)) {
+    const response = await chrome.tabs.sendMessage(tabId, {
+      action: "getElementRect",
+      id: action.id,
+    });
+    if (response?.error) throw new Error(response.error);
+    x = response.rect.x + response.rect.width / 2;
+    y = response.rect.y + response.rect.height / 2;
+  }
+  if (typeof x !== "number" || typeof y !== "number") {
+    throw new Error("hover requires an element id or numeric x and y");
+  }
+  await send(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    pointerType: "mouse",
+  });
+  return `hovered (${x}, ${y})`;
+}
+
+async function actionPdf(tabId, action) {
+  const result = await chrome.debugger.sendCommand(
+    { tabId },
+    "Page.printToPDF",
+    { printBackground: true }
+  );
+  const filename = action.filename || `page_${Date.now()}.pdf`;
+  const url = `data:application/pdf;base64,${result.data}`;
+  await chrome.downloads.download({ url, filename, saveAs: false });
+  return `pdf saved as ${filename}`;
+}
+
 async function actionBack(tabId) {
   await chrome.tabs.goBack(tabId);
   return "navigated back";
@@ -359,6 +454,12 @@ const EXECUTORS = {
   navigate: actionNavigate,
   back: actionBack,
   forward: actionForward,
+  screenshot: actionScreenshot,
+  copy_to_clipboard: actionCopyToClipboard,
+  paste_from_clipboard: actionPasteFromClipboard,
+  scroll_into_view: actionScrollIntoView,
+  hover: actionHover,
+  pdf: actionPdf,
   download: actionDownload,
   read_text: actionReadText,
   wait: actionWait,
