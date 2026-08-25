@@ -442,6 +442,15 @@ async function runTaskLoop(chatId) {
         "If the requested items are now visible, return an answer summarizing the findings " +
         "(e.g. the top 5 with names and prices) with an empty actions list, or return done. Avoid further scrolling.";
       log(chatId, `Step ${step}: ${state.scrollRun} consecutive scrolls; nudging model to conclude`);
+    } else if ((state.poolRun || 0) >= 2) {
+      // open/close/switch flip-flops never trip the tree-hash stall detector
+      // (the page alternates between two different states), so guard it separately.
+      hint =
+        `You have spent ${state.poolRun} consecutive steps only opening/closing/switching tabs. ` +
+        `Remembered facts so far: ${state.findings.length ? JSON.stringify(state.findings) : "(none)"}. ` +
+        "If they satisfy the success criteria, return the final answer NOW with empty actions. " +
+        "Otherwise act on the current tab — do not reopen tabs you already read.";
+      log(chatId, `Step ${step}: ${state.poolRun} consecutive tab-pool steps; nudging model to conclude`);
     }
 
     const screenshot = await captureTabWithRetry(tabId);
@@ -552,6 +561,7 @@ async function runTaskLoop(chatId) {
       }
       const rest = actions.filter((a) => !poolActions.includes(a));
       if (rest.length === 0) {
+        state.poolRun = (state.poolRun || 0) + 1;
         await sleep(400);
         continue;
       }
@@ -636,6 +646,7 @@ async function runTaskLoop(chatId) {
     }
 
     status(chatId, `Step ${step}: executing ${actions.length} action(s)...`);
+    state.poolRun = 0;
     const executableActions = await resolveActionTargets(tabId, actions, snapshot);
     let results = await executeActions(tabId, executableActions);
     if (results.some((result) => !result.ok && isDebuggerDetachedError(result.error))) {
