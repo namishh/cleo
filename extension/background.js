@@ -905,25 +905,11 @@ async function switchPoolTab(state, tabId) {
 // ponytail: flat pool cap — per-chat budgets only if this ever matters
 const MAX_POOL_TABS = 6;
 
-function normalizeUrlForPool(url) {
-  return String(url || "").replace(/^https?:\/\//i, "").replace(/\/$/, "").toLowerCase();
-}
-
 async function handleTabPoolAction(state, action) {
   if (action.type === "open_tab") {
     if (!action.url) throw new Error("open_tab requires url");
     let url = action.url;
     if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-
-    // Already in the pool? Switch to it instead of spawning a duplicate.
-    const wanted = normalizeUrlForPool(url);
-    for (let i = 0; i < state.tabs.length; i++) {
-      const existing = await chrome.tabs.get(state.tabs[i]).catch(() => null);
-      if (existing?.url && normalizeUrlForPool(existing.url) === wanted) {
-        await switchPoolTab(state, state.tabs[i]);
-        return `t${i + 1} is already open — switched to it. Do not open it again.`;
-      }
-    }
 
     if (state.tabs.length >= MAX_POOL_TABS) {
       throw new Error(
