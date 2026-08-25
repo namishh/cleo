@@ -302,11 +302,20 @@ async function actionNavigate(tabId, action) {
 // write happens with a user-gesture-adjacent trusted path (navigator.clipboard
 // in extension pages cannot write images directly).
 async function actionScreenshot(tabId, action) {
-  const result = await chrome.debugger.sendCommand(
-    { tabId },
-    "Page.captureScreenshot",
-    { format: "png", fromSurface: false }
-  );
+  // Visible tabs allow surface captures (better quality); background tabs
+  // only allow renderer captures. Try surface first, then fall back.
+  let result;
+  try {
+    result = await send(tabId, "Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+    });
+  } catch (error) {
+    result = await send(tabId, "Page.captureScreenshot", {
+      format: "png",
+      fromSurface: false,
+    });
+  }
   const dataUrl = `data:image/png;base64,${result.data}`;
 
   if (action.clipboard) {
