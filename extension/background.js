@@ -858,7 +858,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "listChats") {
-    loadAllChats().then((chats) => {
+    loadAllChats().then(async (chats) => {
       const list = Object.values(chats)
         .map(({ id, title, updatedAt }) => ({
           id,
@@ -867,7 +867,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           running: taskStates.get(id)?.running || false,
         }))
         .sort((a, b) => b.updatedAt - a.updatedAt);
-      sendResponse({ chats: list });
+      const activeId = await getActiveChatId();
+      sendResponse({ chats: list, activeId });
     });
     return true;
   }

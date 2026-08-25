@@ -230,23 +230,14 @@ document.getElementById("close-sidebar-btn").addEventListener("click", () => {
 });
 
 let refreshSeq = 0;
-async function refreshChatList() {
-  const seq = ++refreshSeq;
-  const response = await chrome.runtime.sendMessage({ action: "listChats" });
-  if (seq !== refreshSeq) return;
+let chatListCache = { chats: [], activeId: null };
+
+function renderChatList() {
   const list = document.getElementById("chat-list");
   list.textContent = "";
-  const active = await chrome.runtime.sendMessage({ action: "getActiveChat" });
-  if (seq !== refreshSeq) return;
-  const activeId = active?.chat?.id || null;
+  const { chats, activeId } = chatListCache;
 
-  // Track which chats are running for the spinners.
-  runningChats.clear();
-  for (const chat of response?.chats || []) {
-    if (chat.running) runningChats.add(chat.id);
-  }
-
-  if (!response?.chats?.length) {
+  if (!chats.length) {
     const empty = document.createElement("div");
     empty.className = "chat-item";
     empty.textContent = "no chats yet";
@@ -254,7 +245,7 @@ async function refreshChatList() {
     return;
   }
 
-  for (const chat of response.chats) {
+  for (const chat of chats) {
     const item = document.createElement("div");
     item.className = `chat-item${chat.id === activeId ? " active" : ""}`;
     item.dataset.id = chat.id;
@@ -277,7 +268,9 @@ async function refreshChatList() {
     del.addEventListener("click", async (event) => {
       event.stopPropagation();
       await chrome.runtime.sendMessage({ action: "deleteChat", id: chat.id });
+      chatListCache.chats = chatListCache.chats.filter((c) => c.id !== chat.id);
       if (chat.id === activeChatId) clearStream();
+      renderChatList();
       refreshChatList();
     });
     item.appendChild(del);
@@ -285,6 +278,20 @@ async function refreshChatList() {
     item.addEventListener("click", () => openChat(chat.id));
     list.appendChild(item);
   }
+}
+
+async function refreshChatList() {
+  const seq = ++refreshSeq;
+  const response = await chrome.runtime.sendMessage({ action: "listChats" });
+  if (seq !== refreshSeq || !response) return;
+  chatListCache = { chats: response.chats || [], activeId: response.activeId || null };
+
+  runningChats.clear();
+  for (const chat of chatListCache.chats) {
+    if (chat.running) runningChats.add(chat.id);
+  }
+
+  renderChatList();
 }
 
 // Animate spinners for running chats.
@@ -315,6 +322,8 @@ async function openChat(id) {
   activeChatId = id;
   running = response.running || false;
   renderChat(response.chat);
+  chatListCache.activeId = id;
+  renderChatList();
   refreshChatList();
   setRunning(running);
   statusEl.textContent = running ? "running…" : "idle";
@@ -371,6 +380,12 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
   activeChatId = response.chat.id;
   running = false;
   clearStream();
+  chatListCache.chats = [
+    { id: response.chat.id, title: response.chat.title, updatedAt: Date.now(), running: false },
+    ...chatListCache.chats,
+  ];
+  chatListCache.activeId = response.chat.id;
+  renderChatList();
   refreshChatList();
   input.focus();
 });
