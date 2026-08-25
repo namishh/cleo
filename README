@@ -1,0 +1,139 @@
+# Cleo
+
+An AI browser agent that lives in a Chrome side panel. It sees the page through redacted screenshots, reasons with a vision LLM, and drives the browser for you — while PII (names, emails, phones, addresses, IDs) is detected and black-boxed **locally** before anything is sent anywhere.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          CHROME (MV3)                           │
+│                                                                 │
+│  ┌──────────┐   ┌────────────────────┐   ┌───────────────────┐  │
+│  │ SIDE     │   │ SERVICE WORKER     │   │ OFFSCREEN DOC     │  │
+│  │ PANEL    │──▶│ (task loop)        │──▶│ (local ML)        │  │
+│  │ chat UI  │   │ · orchestration    │   │ · Tesseract OCR   │  │
+│  │ steps    │   │ · message routing  │   │ · Kiji PII (ONNX) │  │
+│  │ screens  │   │ · per-chat state   │   │ · regex/context   │  │
+│  └──────────┘   └─────┬────────┬─────┘   └────────┬──────────┘  │
+│                       │        │                  │             │
+│                       │        │                  ▼             │
+│                       │        │         ┌─────────────────┐    │
+│                       │        │         │ ONNX RUNTIME    │    │
+│                       │        │         │ · YuNet faces   │    │
+│                       │        │         │ (WASM, in-proc) │    │
+│                       │        │         └─────────────────┘    │
+│                       │        │                                │
+│                ┌──────▼────────▼──────┐                         │
+│                │ CHROME DEBUGGER (CDP)│                         │
+│                │ · screenshots        │                         │
+│                │ · trusted input      │                         │
+│                │ · background tabs OK │                         │
+│                └──────────┬───────────┘                         │
+└───────────────────────────┼─────────────────────────────────────┘
+                            │
+              redacted image + a11y tree
+                            ▼
+              ┌──────────────────────────┐
+              │ LOCAL BACKEND (Flask)    │
+              │ POST /ask_stream (SSE)   │
+              └────────────┬─────────────┘
+                           ▼
+              ┌──────────────────────────┐
+              │ OPENROUTER (vision LLM)  │
+              └────────────┬─────────────┘
+                           ▼
+              structured actions (JSON)
+```
+
+## Pipeline
+
+```
+user task (side panel)
+      │
+      ▼
+pin tab via chrome.debugger ──────────────┐
+      │                                   │
+      ▼                                   │
+┌───────────────────────┐                 │
+│ OBSERVE               │                 │
+│ · CDP screenshot      │                 │
+│ · DOM → compact a11y  │                 │
+│   tree (ids, roles,   │                 │
+│   hrefs, alts, rects, │                 │
+│   scrollable regions) │                 │
+└──────────┬────────────┘                 │
+           ▼                              │
+┌───────────────────────┐                 │
+│ REDACT (all local)    │                 │
+│ · OCR (Tesseract)     │                 │
+│ · Kiji PII model      │                 │
+│   (ONNX, 53 labels)   │                 │
+│ · YuNet face boxes    │                 │
+│ · DOM privacy regions │                 │
+│ · regex/context pass  │                 │
+│ → union-merged masks  │                 │
+└──────────┬────────────┘                 │
+           ▼                              │
+┌───────────────────────┐                 │
+│ REASON (backend)      │                 │
+│ · POST redacted image │                 │
+│   + sanitized tree    │                 │
+│ · SSE stream, 120s    │                 │
+│   watchdog            │                 │
+│ → actions | note |    │                 │
+│   answer              │                 │
+└──────────┬────────────┘                 │
+           ▼                              │
+┌───────────────────────┐                 │
+│ ACT                   │                 │
+│ · click / type / key  │                 │
+│ · scroll / drag /     │                 │
+│   hover               │                 │
+│ · navigate / back /   │                 │
+│   forward             │                 │
+│ · download / pdf /    │                 │
+│   screenshot /        │                 │
+│   clipboard           │                 │
+│ · read_text /         │                 │
+│   scroll_into_view /  │                 │
+│   remember            │                 │
+│ · adopt new tabs,     │                 │
+│   wait for loads      │                 │
+└──────────┬────────────┘                 │
+           │                              │
+           └──────────────────────────────┘
+                  loop until done /
+                  answer / fail / 50 steps
+```
+
+- **Per-chat isolation** — each chat has its own state (tab, history, findings, step counter); multiple chats run in parallel on different tabs.
+- **Resumable** — steps persist immediately; if the service worker is recycled, interrupted tasks auto-resume.
+- **Self-healing** — debugger re-attach, new-tab adoption, screenshot fallbacks, backend watchdog, offscreen retry.
+- **Notified** — desktop notification when a background chat finishes.
+- **Fail-safe redaction** — model + regex + DOM regions are union-merged; PII never leaves the machine unmasked.
+
+## What is Cleo?
+
+A privacy-first browser automation agent. You give it a task in plain English ("find the cheapest Sony headset, filter by hybrid, give me the top 5"); it observes pages through **redacted screenshots**, reasons with a vision LLM, and executes real browser actions. Anything that looks like PII — names, emails, phone numbers, addresses, IDs — is detected by an **on-device ONNX model** and black-boxed before the screenshot ever leaves your machine. Cleo can still *use* redacted fields (type into them, click them) — it just can't *read* them.
+
+**Quick features**
+
+- Chrome side-panel chat interface with streaming responses
+- Collapsible per-message reasoning: screenshot + note + commands for every step
+- Multiple chats, running in parallel, persisted locally (`unlimitedStorage`)
+- Auto-titled chats, desktop notifications on completion
+- 20+ browser actions: click, type, key combos, scroll, drag, hover, select, navigate, back/forward, download, PDF export, clipboard, read_text, scroll_into_view, remember
+- Works on background tabs (CDP input + renderer screenshots)
+- Research workflow: open items → remember facts → return to list → summarize top N
+- Anti-stall: no-progress detection, scroll-run detection, backend watchdog, auto-resume
+
+## How Cleo compares
+
+| | Cleo | Cloud agents (OpenAI Operator, Anthropic Computer Use) | Privacy proxies (Kiji Privacy Proxy) | Forked browsers (BrowserOS, Nanobrowser) | Orchestrator extensions (browser-use style) |
+|---|---|---|---|---|---|
+| Where it runs | Chrome extension (side panel) | Cloud VM / sandboxed browser | Local proxy between app & API | Separate Chromium fork | Extension or script harness |
+| PII handling | On-device ONNX redaction of screenshots + DOM before sending | None — full page goes to the model | Masks text in API payloads | Depends on config | Usually none |
+| Works in your real Chrome (sessions, logins, cookies) | Yes | No — separate sandbox session | N/A (proxy, not driver) | No — separate browser | Yes, but often script-driven |
+| Vision-driven (works on canvas/complex UIs) | Yes | Yes | No (text payloads only) | Varies | Often DOM-only |
+| Setup | Load unpacked + local Flask backend | Account + cloud | Desktop app install | Build/install a fork | pip/CLI + config |
+| Model | Any vision model via OpenRouter (one key) | Vendor-locked | Vendor model (DistilBERT detector) | BYO key | BYO key |
+
+**The short version:** cloud agents see everything and live outside your browser; privacy proxies protect API text but can't see or drive pages; forked browsers isolate you from your daily profile. Cleo is the middle path — a real extension in your real Chrome, where a local model scrubs the pixels and the DOM before a vision model decides what to do next.
