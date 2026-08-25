@@ -237,13 +237,13 @@ body {
 .markdown h2,
 .markdown h3,
 .markdown h4 {
-  margin: 12px 0 4px;
+  margin: 8px 0 2px;
   font-size: 12px;
   font-weight: 700;
 }
 
 .markdown p {
-  margin: 6px 0;
+  margin: 3px 0;
 }
 
 .markdown a {
@@ -258,12 +258,12 @@ body {
 
 .markdown ul,
 .markdown ol {
-  margin: 6px 0;
+  margin: 3px 0;
   padding-left: 18px;
 }
 
 .markdown li {
-  margin: 2px 0;
+  margin: 1px 0;
 }
 
 .markdown code {
@@ -273,8 +273,8 @@ body {
 }
 
 .markdown pre {
-  margin: 8px 0;
-  padding: 8px;
+  margin: 5px 0;
+  padding: 6px;
   overflow-x: auto;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -287,21 +287,21 @@ body {
 }
 
 .markdown blockquote {
-  margin: 8px 0;
+  margin: 5px 0;
   padding-left: 10px;
   border-left: 2px solid var(--border);
   color: var(--dim);
 }
 
 .markdown table {
-  margin: 8px 0;
+  margin: 5px 0;
   border-collapse: collapse;
   width: 100%;
 }
 
 .markdown th,
 .markdown td {
-  padding: 4px 8px;
+  padding: 3px 6px;
   border: 1px solid var(--border);
   text-align: left;
 }
@@ -312,7 +312,7 @@ body {
 }
 
 .markdown hr {
-  margin: 10px 0;
+  margin: 6px 0;
   border: 0;
   border-top: 1px solid var(--border);
 }
