@@ -22,6 +22,7 @@
 
 !.gitignore
 !.gitattributes
+!README
 .DS_Store
 
 !backend
