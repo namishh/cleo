@@ -396,6 +396,17 @@ body {
 }
 
 /* markdown rendering */
+/* word-break: break-word (set on .msg) doesn't reliably wrap long unbroken
+   runs inside inline elements like <a> — a raw URL used as its own link text
+   (e.g. a titleless page in the research sources list) can push a horizontal
+   scrollbar into the chat stream. overflow-wrap: anywhere is the property
+   actually meant for this and cascades to every wrapping element below
+   (p/li/a/table cells) without touching pre/code's intentional horizontal
+   scroll, since those keep white-space: pre. */
+.markdown {
+  overflow-wrap: anywhere;
+}
+
 .markdown > :first-child {
   margin-top: 0;
 }
