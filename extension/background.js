@@ -172,6 +172,12 @@ async function getCompactPageSnapshot(tabId) {
     if (snapshot?.error) throw new Error(snapshot.error);
     return snapshot;
   } catch (firstError) {
+    // Only inject when the content script genuinely isn't there. Blindly
+    // re-injecting on every error re-runs content.js in the same isolated
+    // world and redeclares its top-level consts (SyntaxError).
+    const msg = String(firstError?.message || firstError);
+    const noReceiver = /receiving end does not exist|could not establish connection|message port closed/i.test(msg);
+    if (!noReceiver) throw firstError;
     await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
     const snapshot = await chrome.tabs.sendMessage(tabId, {
       action: "getCompactAccessibilityTree",
