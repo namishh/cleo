@@ -311,11 +311,6 @@ function softmax(values) {
   return exps.map((value) => value / total);
 }
 
-async function getPiiStrict() {
-  const { piiStrict } = await chrome.storage.local.get("piiStrict");
-  return !!piiStrict;
-}
-
 async function detectKijiPii(words, strict) {
   if (!words.length) return [];
 
@@ -429,17 +424,16 @@ async function detectKijiPii(words, strict) {
   return regions;
 }
 
-async function findPiiRegions(imageUrl, origW, origH) {
+async function findPiiRegions(imageUrl, origW, origH, piiStrict = false) {
   const worker = await getTesseractWorker();
   reportProgress(55, "Reading text from screenshot...");
   const result = await worker.recognize(imageUrl);
   const words = result.data.words || [];
 
   reportProgress(75, "Running Kiji PII model...");
-  const strict = await getPiiStrict();
   let regions = [];
   try {
-    regions = await detectKijiPii(words, strict);
+    regions = await detectKijiPii(words, piiStrict);
     console.log(`Kiji PII regions found: ${regions.length}`);
   } catch (error) {
     // Regex/label checks below remain the fallback if the model assets or
@@ -478,7 +472,7 @@ async function findPiiRegions(imageUrl, origW, origH) {
       if (
         EMAIL_RE.test(text) ||
         PHONE_RE.test(text) ||
-        (strict && DATE_RE.test(text))
+        (piiStrict && DATE_RE.test(text))
       ) {
         regions.push([w.bbox.x0, w.bbox.y0, w.bbox.x1, w.bbox.y1]);
       }
@@ -609,7 +603,8 @@ async function redactImage(
   targetName,
   domPrivacyRegions = [],
   viewportWidth = 0,
-  viewportHeight = 0
+  viewportHeight = 0,
+  piiStrict = false
 ) {
   reportProgress(20, "Loading screenshot...");
   const img = await loadImage(imageUrl);
@@ -639,7 +634,7 @@ async function redactImage(
   console.log(`Faces found: ${faceBoxes.length}`);
 
   reportProgress(45, "Loading OCR engine...");
-  const piiRegions = await findPiiRegions(imageUrl, origW, origH);
+  const piiRegions = await findPiiRegions(imageUrl, origW, origH, piiStrict);
   console.log(`PII regions found: ${piiRegions.length}`);
 
   reportProgress(85, "Applying redactions...");
@@ -680,7 +675,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       request.targetName,
       request.domPrivacyRegions || [],
       request.viewportWidth || 0,
-      request.viewportHeight || 0
+      request.viewportHeight || 0,
+      !!request.piiStrict
     )
       .then((result) => {
         console.log("Offscreen sending result", result);

@@ -452,6 +452,7 @@ async function runTaskLoop(chatId) {
     await ensureOffscreenDocument();
     status(chatId, `Step ${step}: redacting screenshot...`);
 
+    const { piiStrict } = await chrome.storage.local.get("piiStrict");
     const redacted = await chrome.runtime.sendMessage({
       action: "processScreenshot",
       imageUrl: screenshot,
@@ -460,6 +461,7 @@ async function runTaskLoop(chatId) {
       viewportWidth: snapshot.viewportWidth || 0,
       viewportHeight: snapshot.viewportHeight || 0,
       chatId,
+      piiStrict: !!piiStrict,
     });
 
     if (!state.running) return;
