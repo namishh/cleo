@@ -45,7 +45,7 @@ ACTION_SPACE = {
     "key": "Press a key or combo, e.g. Enter, Tab, Control+a. Requires key.",
     "drag": "Drag from one coordinate to another. Requires numeric x, y, x2, y2.",
     "select": "Select an <option> by visible text inside a <select> at coordinates. Requires x, y and option.",
-    "navigate": "Open a URL in the pinned tab. Requires url.",
+    "navigate": "Change the current tab's URL to move anywhere — a different site, a search results page (e.g. https://www.amazon.com/s?k=sony+headset), or a specific product page. Requires url.",
     "screenshot": "Capture the current tab. With clipboard=true copies it to the clipboard; otherwise saves it as a PNG file. Optional filename.",
     "copy_to_clipboard": "Copy text to the clipboard. Requires text.",
     "paste_from_clipboard": "Read clipboard text and paste it into the focused element (or at x, y). Optional x, y.",
@@ -88,6 +88,7 @@ Rules:
 - Example response (by element id): {{"actions": [{{"type": "click", "id": "e62"}}], "note": "Clicking the image"}}
 - Example response (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
+- To move to a different site or jump straight to a known page, use navigate with a full URL — it is faster than clicking through menus.
 - End the list with {{"type": "done"}} only when the task is fully complete.
 - Completion check: before doing anything else, ask yourself "is the task already achieved on this screen?" If yes, return done immediately instead of continuing to act.
 - Reporting rule: if the task asks you to find, read, extract, calculate, or compare ANY information (totals, percentages, prices, names, counts), you MUST finish with an answer containing the result — e.g. {{"answer": "Total lectures: 40, attended: 32 (80%)"}} with empty actions. Do the math yourself from the values you read. NEVER return done for such tasks without an answer; a bare done means the user gets nothing.
