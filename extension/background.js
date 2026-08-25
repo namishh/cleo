@@ -2,6 +2,9 @@ import { executeActions } from "./actions.js";
 
 const BACKEND_BASE = "http://127.0.0.1:5001";
 const MAX_STEPS = 50;
+// Internal browser pages (new tab, chrome://, extension pages, devtools) can't be
+// debugged or have a content script injected — never try to start a task on one.
+const RESTRICTED_URL_RE = /^(chrome|chrome-extension|edge|about|devtools):/i;
 const CHATS_KEY = "cleo_chats";
 const ACTIVE_CHAT_KEY = "cleo_activeChat";
 
@@ -236,7 +239,7 @@ async function hasOffscreenDocument() {
 
 // ---------- task loop (one per chat) ----------
 
-async function startTask(task, requestedChatId) {
+async function startTask(task, requestedChatId, mode = "normal") {
   if (!String(task || "").trim()) throw new Error("Task cannot be empty");
 
   const activeChatId = await getActiveChatId();
@@ -255,6 +258,14 @@ async function startTask(task, requestedChatId) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No active tab");
 
+  // New-tab and chrome://... pages can't be debugged or have a content script
+  // injected (both are blocked by Chrome for internal pages), so a task
+  // started on one would fail every step. Start somewhere real instead.
+  if (!tab.url || RESTRICTED_URL_RE.test(tab.url)) {
+    await chrome.tabs.update(tab.id, { url: "https://www.google.com" });
+    await waitForTabLoad(tab.id, 10000);
+  }
+
   // One debugger session per tab — a second chat cannot drive the same tab.
   for (const state of taskStates.values()) {
     if (state.running && state.tabId === tab.id) {
@@ -270,6 +281,7 @@ async function startTask(task, requestedChatId) {
     tabId: tab.id,
     windowId: tab.windowId,
     task: String(task).trim(),
+    mode: mode === "research" ? "research" : "normal",
     step: targetChat.lastStep || 0,
     history: targetChat.taskHistory || [],
     findings: targetChat.findings || [],
@@ -283,7 +295,9 @@ async function startTask(task, requestedChatId) {
   taskStates.set(targetChat.id, state);
   updateKeepalive();
 
-  targetChat.entries.push({ t: "user", text: state.task, ts: Date.now() });
+  targetChat.entries.push({ t: "user", text: state.task, mode: state.mode, ts: Date.now() });
+  targetChat.mode = state.mode;
+  targetChat.lastTask = state.task;
 
   // Compile the task spec with the intermediate model (also re-compiles on
   // follow-up messages, diffing against the existing spec). Non-fatal: the
@@ -314,8 +328,8 @@ async function startTask(task, requestedChatId) {
   }
   await saveChat(targetChat);
 
-  emit(targetChat.id, "user", { text: state.task });
-  status(targetChat.id, `Running on tab ${tab.id}`);
+  emit(targetChat.id, "user", { text: state.task, mode: state.mode });
+  status(targetChat.id, state.mode === "research" ? `Researching on tab ${tab.id}` : `Running on tab ${tab.id}`);
   runTaskLoop(targetChat.id).catch((error) => {
     console.error(`Task loop failed for ${targetChat.id}:`, error);
     log(targetChat.id, `Fatal error: ${error.message}`);
@@ -429,7 +443,14 @@ async function runTaskLoop(chatId) {
       state.lastTreeHash = treeHash;
     }
     let hint = "";
-    if (state.stallCount >= 2) {
+    if (state.mode === "research" && state.findings.length === 0 && (state.researchBlocked || 0) >= 1) {
+      hint =
+        "You just tried to answer/done without reading any real source — that was blocked. This " +
+        "is research mode: you must open_tab (or navigate) to a real page relevant to the " +
+        "question, then read_text and remember at least one fact from it, before you're allowed " +
+        "to answer. Return actions now (typically open_tab), not an answer.";
+      log(chatId, `Step ${step}: nudging model to actually research before answering`);
+    } else if (state.stallCount >= 2) {
       hint =
         `The page has not changed for ${state.stallCount} consecutive steps. ` +
         "Do NOT repeat the same action. If the task is already complete, return done. " +
@@ -451,6 +472,15 @@ async function runTaskLoop(chatId) {
         "If they satisfy the success criteria, return the final answer NOW with empty actions. " +
         "Otherwise act on the current tab — do not reopen tabs you already read.";
       log(chatId, `Step ${step}: ${state.poolRun} consecutive tab-pool steps; nudging model to conclude`);
+    } else if ((state.emptyRun || 0) >= 1) {
+      // A step that returns actions:[] with no answer/done/fail is invalid per the
+      // system prompt's own rules. Don't wait for the tree-hash stall detector (which
+      // needs a second identical step) — nudge on the very next attempt.
+      hint =
+        "Your previous response returned no actions and no answer/done/fail, which is invalid. " +
+        "You MUST return at least one action this step, or conclude with an answer (if you " +
+        'already have enough information) or {"type":"fail","reason":"..."} (if truly stuck).';
+      log(chatId, `Step ${step}: nudging model after an empty-actions response`);
     }
 
     const screenshot = await captureTabWithRetry(tabId);
@@ -498,6 +528,7 @@ async function runTaskLoop(chatId) {
             image: redacted.redactedImageUrl,
             tree,
             task: state.task,
+            mode: state.mode,
             history: state.history.slice(-20),
             hint,
             findings: state.findings,
@@ -519,6 +550,7 @@ async function runTaskLoop(chatId) {
             image: redacted.redactedImageUrl,
             tree,
             task: state.task,
+            mode: state.mode,
             history: state.history.slice(-20),
             hint: (hint ? hint + " " : "") + "Previous attempt timed out; respond concisely.",
             findings: state.findings,
@@ -562,6 +594,7 @@ async function runTaskLoop(chatId) {
       const rest = actions.filter((a) => !poolActions.includes(a));
       if (rest.length === 0) {
         state.poolRun = (state.poolRun || 0) + 1;
+        state.emptyRun = 0;
         await sleep(400);
         continue;
       }
@@ -594,27 +627,52 @@ async function runTaskLoop(chatId) {
     }
 
     // remember actions record facts for the final summary; they never touch
-    // the browser. If a step only remembers, nothing else executes.
+    // the browser. If a step only remembers, nothing else executes. Tag each
+    // fact with the current tab's URL/title (read from the tab, not trusted
+    // from the model) so the final answer can list real sources.
     if (actions.some((action) => action.type === "remember")) {
+      const sourceTab = await chrome.tabs.get(tabId).catch(() => null);
       for (const action of actions.filter((action) => action.type === "remember")) {
         if (action.fact) {
-          state.findings.push(action.fact);
+          state.findings.push({ fact: action.fact, url: sourceTab?.url || null, title: sourceTab?.title || null });
           log(chatId, `Step ${step}: remembered — ${action.fact}`);
         }
       }
       actions = actions.filter((action) => action.type !== "remember");
       if (actions.length === 0) {
+        state.emptyRun = 0;
         await sleep(200);
         continue;
       }
       emit(chatId, "step-actions", { step, actions });
     }
 
+    // Research mode must not answer straight from the model's own knowledge — the prompt
+    // asks for this, but LLM compliance with a buried instruction is unreliable, so enforce
+    // it deterministically too: block a would-be terminal answer/done until at least one
+    // remember has actually happened (i.e. a real page was read), up to a few attempts so a
+    // truly stubborn model can't deadlock the chat forever.
+    const wantsToTerminate = !!decision.answer || actions.some((action) => action.type === "done");
+    if (state.mode === "research" && state.findings.length === 0 && wantsToTerminate) {
+      state.researchBlocked = (state.researchBlocked || 0) + 1;
+      if (state.researchBlocked <= 3) {
+        log(
+          chatId,
+          `Step ${step}: blocked an answer with no sources read yet (research mode, attempt ${state.researchBlocked}/3)`
+        );
+        await sleep(500);
+        continue;
+      }
+      log(chatId, `Step ${step}: allowing an unresearched answer after ${state.researchBlocked} blocked attempts`);
+    }
+
     if (decision.answer) {
-      emit(chatId, "answer", { text: decision.answer });
+      const finalText =
+        state.mode === "research" ? decision.answer + formatSourcesSection(state.findings) : decision.answer;
+      emit(chatId, "answer", { text: finalText });
       const chat = await loadChat(chatId);
       if (chat) {
-        chat.entries.push({ t: "answer", text: decision.answer, ts: Date.now() });
+        chat.entries.push({ t: "answer", text: finalText, ts: Date.now() });
         await saveChat(chat);
       }
       stopTask(chatId, "Answered");
@@ -623,12 +681,20 @@ async function runTaskLoop(chatId) {
 
     if (actions.some((action) => action.type === "fail")) {
       const failure = actions.find((action) => action.type === "fail");
-      stopTask(chatId, `Failed: ${failure.reason || "server returned fail"}`);
+      const endedText = `Task ended because ${failure.reason || "the server returned fail with no reason"}.`;
+      emit(chatId, "answer", { text: endedText });
+      const chat = await loadChat(chatId);
+      if (chat) {
+        chat.entries.push({ t: "answer", text: endedText, ts: Date.now() });
+        await saveChat(chat);
+      }
+      stopTask(chatId, endedText);
       return;
     }
     if (actions.some((action) => action.type === "done")) {
       const done = actions.find((action) => action.type === "done");
-      const summary = done.summary || done.answer || done.text;
+      let summary = done.summary || done.answer || done.text;
+      if (summary && state.mode === "research") summary += formatSourcesSection(state.findings);
       if (summary) {
         emit(chatId, "answer", { text: summary });
         const chat = await loadChat(chatId);
@@ -641,12 +707,15 @@ async function runTaskLoop(chatId) {
     }
 
     if (actions.length === 0) {
+      state.emptyRun = (state.emptyRun || 0) + 1;
+      log(chatId, `Step ${step}: 0 actions and no answer/done/fail (${state.emptyRun})`);
       await sleep(1000);
       continue;
     }
 
     status(chatId, `Step ${step}: executing ${actions.length} action(s)...`);
     state.poolRun = 0;
+    state.emptyRun = 0;
     const executableActions = await resolveActionTargets(tabId, actions, snapshot);
     let results = await executeActions(tabId, executableActions);
     if (results.some((result) => !result.ok && isDebuggerDetachedError(result.error))) {
@@ -740,6 +809,7 @@ async function askBackendStream(payload, onDelta) {
         image_b64: payload.image,
         tree: payload.tree,
         task: payload.task,
+        mode: payload.mode || "normal",
         history: payload.history,
         hint: payload.hint || "",
         findings: payload.findings || [],
@@ -832,10 +902,13 @@ async function resumeInterruptedTasks() {
       tabId: chat.lastTabId,
       windowId: null,
       task: chat.lastTask || "",
+      mode: chat.mode === "research" ? "research" : "normal",
       step: chat.lastStep || 0,
       history: chat.taskHistory || [],
       findings: chat.findings || [],
       spec: chat.spec || null,
+      tabs: [chat.lastTabId],
+      currentTab: chat.lastTabId,
       lastTreeHash: null,
       stallCount: 0,
       scrollRun: 0,
@@ -862,6 +935,22 @@ function hashString(text) {
 function titleFromMessage(text) {
   const words = String(text).trim().replace(/\s+/g, " ").split(" ");
   return words.slice(0, 4).join(" ");
+}
+
+// Deterministic "Sources" appendix for research-mode answers — built from the
+// URLs actually visited (captured server-side on each remember, not trusted
+// from the model), not from whatever the model claims it looked at.
+function formatSourcesSection(findings) {
+  const seen = new Set();
+  const lines = [];
+  for (const finding of findings || []) {
+    const url = finding && typeof finding === "object" ? finding.url : null;
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const label = (finding.title && finding.title.trim()) || url;
+    lines.push(`- [${label.replace(/[[\]]/g, "")}](${url})`);
+  }
+  return lines.length ? `\n\n## Sources\n${lines.join("\n")}` : "";
 }
 
 // ---------- message routing ----------
@@ -910,7 +999,12 @@ async function switchPoolTab(state, tabId) {
   }
   state.tabId = tabId;
   state.currentTab = tabId;
+  // Background tabs are not composited and their JS (rAF, IntersectionObserver,
+  // lazy-loaders) is throttled, so screenshots/DOM read while backgrounded can be
+  // stale or incomplete. Bring the tab to the front of its window before observing it.
+  await chrome.tabs.update(tabId, { active: true }).catch(() => {});
   await waitForTabLoad(tabId, 10000);
+  await sleep(200);
 }
 
 // ponytail: flat pool cap — per-chat budgets only if this ever matters
@@ -964,6 +1058,7 @@ async function adoptNewTab(state, newTabId) {
   if (!state.tabs.includes(newTabId)) state.tabs.push(newTabId);
   await attachDebugger(newTabId);
   chrome.debugger.detach({ tabId: oldTabId }).catch(() => {});
+  await chrome.tabs.update(newTabId, { active: true }).catch(() => {});
   await waitForTabLoad(newTabId, 10000);
 }
 
@@ -988,7 +1083,7 @@ function waitForTabLoad(tabId, timeout = 10000) {
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "startTask") {
-    startTask(request.task, request.chatId)
+    startTask(request.task, request.chatId, request.mode)
       .then((state) => sendResponse({ chatId: state.chatId, tabId: state.tabId }))
       .catch((error) => sendResponse({ error: error.message }));
     return true;
@@ -1091,12 +1186,4 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-});
-
-chrome.runtime.onInstalled.addListener(({ reason }) => {
-  console.log(`Cleo installed. Reason: ${reason}`);
-});
-
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
-  console.error("Failed to set side panel behavior:", error);
 });

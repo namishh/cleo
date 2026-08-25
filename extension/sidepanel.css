@@ -224,6 +224,17 @@ body {
   color: var(--dim);
 }
 
+.research-badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* markdown rendering */
 .markdown > :first-child {
   margin-top: 0;

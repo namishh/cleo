@@ -2,6 +2,7 @@ const streamEl = document.getElementById("stream");
 const form = document.getElementById("input-form");
 const input = document.getElementById("task-input");
 const sendBtn = document.getElementById("send-btn");
+const researchBtn = document.getElementById("research-btn");
 const statusEl = document.getElementById("status");
 const chatsSidebar = document.getElementById("chats-sidebar");
 
@@ -17,9 +18,25 @@ let spinIndex = 0;
 function setRunning(value) {
   running = value;
   sendBtn.textContent = value ? "stop" : "send";
+  researchBtn.disabled = value;
 }
 
+// "Stick to bottom" like a normal chat app: auto-scroll follows new content
+// only while the user is already at (or returns to) the bottom. Scrolling up
+// to read earlier steps disables it until they scroll back down themselves.
+const STICK_THRESHOLD = 32;
+let stickToBottom = true;
+
+function isNearBottom() {
+  return streamEl.scrollHeight - streamEl.scrollTop - streamEl.clientHeight <= STICK_THRESHOLD;
+}
+
+streamEl.addEventListener("scroll", () => {
+  stickToBottom = isNearBottom();
+});
+
 function scrollToEnd() {
+  if (!stickToBottom) return;
   streamEl.scrollTop = streamEl.scrollHeight;
 }
 
@@ -33,14 +50,20 @@ function avatar(className) {
   return img;
 }
 
-function addUserMessage(text) {
+function addUserMessage(text, mode) {
   const div = document.createElement("div");
   div.className = "msg user";
   const avatarEl = document.createElement("div");
   avatarEl.className = "avatar user";
   const body = document.createElement("div");
   body.className = "msg-body";
-  body.textContent = text;
+  if (mode === "research") {
+    const badge = document.createElement("span");
+    badge.className = "research-badge";
+    badge.textContent = "research";
+    body.appendChild(badge);
+  }
+  body.appendChild(document.createTextNode(text));
   div.append(avatarEl, body);
   streamEl.appendChild(div);
   scrollToEnd();
@@ -216,6 +239,7 @@ function clearStream() {
   stepElements = new Map();
   currentStepsBlock = null;
   streamEl.textContent = "";
+  stickToBottom = true;
 }
 
 // ---------- chat sidebar ----------
@@ -334,7 +358,7 @@ function renderChat(chat) {
   if (!chat) return;
   for (const entry of chat.entries || []) {
     if (entry.t === "user") {
-      addUserMessage(entry.text);
+      addUserMessage(entry.text, entry.mode);
       startNewStepsBlock();
     } else if (entry.t === "answer") {
       addAnswerMessage(entry.text);
@@ -399,7 +423,7 @@ chrome.runtime.onMessage.addListener((message) => {
     }
     switch (message.kind) {
       case "user":
-        addUserMessage(message.text);
+        addUserMessage(message.text, message.mode);
         startNewStepsBlock();
         break;
       case "step-delta":
@@ -460,9 +484,45 @@ chrome.runtime.sendMessage({ action: "getActiveChat" }, async (response) => {
   refreshChatList();
 });
 
+async function beginTask(mode) {
+  const task = input.value.trim();
+  if (!task) {
+    statusEl.textContent = "type a task first";
+    input.focus();
+    return;
+  }
+
+  stickToBottom = true;
+  sendBtn.disabled = true;
+  researchBtn.disabled = true;
+  statusEl.textContent = mode === "research" ? "starting research..." : "starting...";
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: "startTask",
+      task,
+      chatId: activeChatId,
+      mode,
+    });
+    if (response?.error) {
+      statusEl.textContent = `error: ${response.error}`;
+    } else {
+      activeChatId = response.chatId;
+      setRunning(true);
+      statusEl.textContent =
+        mode === "research" ? `researching on tab ${response.tabId}` : `running on tab ${response.tabId}`;
+      refreshChatList();
+      input.value = "";
+    }
+  } catch (error) {
+    statusEl.textContent = `error: ${error.message}`;
+  } finally {
+    sendBtn.disabled = false;
+    researchBtn.disabled = running;
+  }
+}
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const task = input.value.trim();
 
   if (running) {
     await chrome.runtime.sendMessage({ action: "stopTask", chatId: activeChatId });
@@ -471,32 +531,10 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!task) {
-    statusEl.textContent = "type a task first";
-    input.focus();
-    return;
-  }
+  await beginTask("normal");
+});
 
-  sendBtn.disabled = true;
-  statusEl.textContent = "starting...";
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: "startTask",
-      task,
-      chatId: activeChatId,
-    });
-    if (response?.error) {
-      statusEl.textContent = `error: ${response.error}`;
-    } else {
-      activeChatId = response.chatId;
-      setRunning(true);
-      statusEl.textContent = `running on tab ${response.tabId}`;
-      refreshChatList();
-      input.value = "";
-    }
-  } catch (error) {
-    statusEl.textContent = `error: ${error.message}`;
-  } finally {
-    sendBtn.disabled = false;
-  }
+researchBtn.addEventListener("click", async () => {
+  if (running) return;
+  await beginTask("research");
 });
