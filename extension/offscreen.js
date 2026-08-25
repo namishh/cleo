@@ -535,13 +535,6 @@ function findValueToRightOfBox(labelBox, words, rowTol = 20, maxGap = 700) {
   };
 }
 
-async function copyImageToClipboard(dataUrl) {
-  const blob = await (await fetch(dataUrl)).blob();
-  // ClipboardItem requires PNG for images.
-  const pngBlob = blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" });
-  await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
-}
-
 async function redactImage(
   imageUrl,
   targetName,
@@ -610,29 +603,6 @@ async function redactImage(
 
 // Register message listener immediately.
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "copyImageToClipboard") {
-    copyImageToClipboard(request.dataUrl)
-      .then(() => sendResponse({ ok: true }))
-      .catch((err) => sendResponse({ error: err.message || String(err) }));
-    return true;
-  }
-
-  if (request.action === "copyTextToClipboard") {
-    navigator.clipboard
-      .writeText(request.text)
-      .then(() => sendResponse({ ok: true }))
-      .catch((err) => sendResponse({ error: err.message || String(err) }));
-    return true;
-  }
-
-  if (request.action === "readClipboardText") {
-    navigator.clipboard
-      .readText()
-      .then((text) => sendResponse({ text }))
-      .catch((err) => sendResponse({ error: err.message || String(err) }));
-    return true;
-  }
-
   if (request.action === "processScreenshot") {
     console.log("Offscreen received processScreenshot request");
     currentJobChatId = request.chatId || null;
@@ -655,11 +625,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// Signal that the offscreen document is loaded and listening.
+// Signal that the offscreen document is loaded and listening. Heavy
+// libraries get a bounded grace period; if they fail, signal anyway so the
+// document is usable and individual features fail with clear errors.
 (async function signalReady() {
-  while (typeof ort === "undefined" || typeof Tesseract === "undefined") {
+  const start = Date.now();
+  while ((typeof ort === "undefined" || typeof Tesseract === "undefined") && Date.now() - start < 3000) {
     await new Promise((r) => setTimeout(r, 50));
   }
-  console.log("Offscreen libraries loaded, sending ready signal");
+  console.log(
+    `Offscreen ready (ort: ${typeof ort !== "undefined"}, tesseract: ${typeof Tesseract !== "undefined"})`
+  );
   chrome.runtime.sendMessage({ action: "offscreenReady" }).catch(() => {});
 })();

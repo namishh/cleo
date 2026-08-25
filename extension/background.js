@@ -193,18 +193,30 @@ async function ensureOffscreenDocument() {
   }
   if (offscreenReadyPromise) return offscreenReadyPromise;
 
-  offscreenReadyPromise = new Promise((resolve, reject) => {
-    offscreenResolve = resolve;
-    setTimeout(() => reject(new Error("Offscreen document failed to become ready")), 10000);
-  });
-
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["WORKERS", "DOM_PARSER"],
-    justification: "Run local screenshot redaction models",
-  });
-  await offscreenReadyPromise;
-  offscreenResolve = null;
+  // Retry once with a fresh document if the first one stalls.
+  let lastError;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    offscreenReadyPromise = new Promise((resolve, reject) => {
+      offscreenResolve = resolve;
+      setTimeout(() => reject(new Error("Offscreen document failed to become ready")), 10000);
+    });
+    try {
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["WORKERS", "DOM_PARSER"],
+        justification: "Run local screenshot redaction models",
+      });
+      await offscreenReadyPromise;
+      offscreenResolve = null;
+      return;
+    } catch (error) {
+      lastError = error;
+      await chrome.offscreen.closeDocument().catch(() => {});
+      offscreenReadyPromise = null;
+      offscreenResolve = null;
+    }
+  }
+  throw lastError;
 }
 
 async function hasOffscreenDocument() {
