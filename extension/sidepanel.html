@@ -16,9 +16,58 @@
         <button id="new-chat-btn" type="button" class="new-chat">+ new chat</button>
         <div id="chat-list" class="chat-list"></div>
       </aside>
+      <aside id="settings-sidebar" class="settings-sidebar">
+        <div class="sidebar-head">
+          <span>settings</span>
+          <button id="close-settings-btn" type="button">x</button>
+        </div>
+        <div class="settings-body">
+          <label class="settings-label" for="settings-auth-token">backend auth token</label>
+          <input id="settings-auth-token" type="text" class="settings-input" autocomplete="off" />
+
+          <label class="checkbox">
+            <input id="settings-direct-mode" type="checkbox" class="checkbox-input sr-only-input" />
+            <span class="checkbox-control" aria-hidden="true">
+              <svg class="checkbox-check" viewBox="0 0 16 16" width="10" height="10">
+                <path
+                  d="M2 8.5 L6 12.5 L14 3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </span>
+            <span>bypass server, connect directly to OpenRouter</span>
+          </label>
+
+          <div id="settings-direct-fields" class="settings-direct-fields hidden">
+            <label class="settings-label" for="settings-openrouter-key">OpenRouter API key</label>
+            <input id="settings-openrouter-key" type="password" class="settings-input" autocomplete="off" />
+
+            <label class="settings-label" for="settings-openrouter-model">OpenRouter model</label>
+            <input id="settings-openrouter-model" type="text" class="settings-input" autocomplete="off" />
+          </div>
+
+          <label class="settings-label" for="settings-display-name">cleo's display name</label>
+          <input id="settings-display-name" type="text" class="settings-input" autocomplete="off" />
+
+          <label class="settings-label">your avatar gradient</label>
+          <div class="settings-gradient-row">
+            <input id="settings-avatar-color1" type="color" />
+            <input id="settings-avatar-color2" type="color" />
+            <div id="settings-avatar-preview" class="settings-avatar-preview"></div>
+          </div>
+
+          <button id="settings-save-btn" type="button" class="settings-save">save</button>
+          <div id="settings-status" class="settings-status"></div>
+        </div>
+      </aside>
       <header class="topbar">
         <button id="sidebar-toggle-btn" type="button">=</button>
         <span class="brand">cleo</span>
+        <button id="settings-toggle-btn" type="button" class="settings-toggle">settings</button>
       </header>
       <div id="stream" class="stream">
         <div class="empty">send a task to begin</div>

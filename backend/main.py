@@ -38,6 +38,20 @@ COMPILATION_MODEL = os.environ.get("OPENROUTER_COMPILATION_MODEL", MODEL)
 API_KEY = os.environ["OPENROUTER_API_KEY"]
 client = OpenRouter(api_key=API_KEY)
 
+# Demo auth: the extension sends this as "Authorization: Bearer <token>" on every
+# request. Not real security (it's a shared static token over localhost), just
+# enough friction to make this look/behave like a real backend service.
+AUTH_TOKEN = os.environ.get("CLEO_AUTH_TOKEN", "9876543210")
+
+
+@app.before_request
+def _require_auth():
+    if request.path == "/health":
+        return None
+    supplied = request.headers.get("Authorization", "")
+    if supplied.removeprefix("Bearer ").strip() != AUTH_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+
 # The complete action space the model may choose from.
 ACTION_SPACE = {
     "click": "Click a tree element by id (preferred) or viewport coordinates (CSS px). With id, x/y are optional.",
@@ -171,7 +185,7 @@ Reporting the result:
   automatically from the pages you actually opened. Just cite sources inline in the prose
   as above.
 - If, after checking a few genuinely relevant sources (not just one), what's being asked for
-  simply does not exist or cannot be found, use {{"type": "fail", "reason": "..."}} instead of
+  simply does not exist or cannot be found, use {"type": "fail", "reason": "..."} instead of
   fabricating an answer or continuing to search indefinitely — say specifically what you
   checked and why it came up empty.
 """

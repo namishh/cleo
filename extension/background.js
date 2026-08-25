@@ -1,4 +1,5 @@
 import { executeActions } from "./actions.js";
+import { directCompile, directAskStream } from "./openrouter-direct.js";
 
 const BACKEND_BASE = "http://127.0.0.1:5001";
 const MAX_STEPS = 50;
@@ -7,6 +8,25 @@ const MAX_STEPS = 50;
 const RESTRICTED_URL_RE = /^(chrome|chrome-extension|edge|about|devtools):/i;
 const CHATS_KEY = "cleo_chats";
 const ACTIVE_CHAT_KEY = "cleo_activeChat";
+const SETTINGS_KEY = "cleo_settings";
+
+// Demo auth token must match backend's CLEO_AUTH_TOKEN (defaults to the same
+// value there). "Bypass server" mode skips the backend entirely and calls
+// OpenRouter directly from here (see openrouter-direct.js) — no server, no
+// auth token, just the user's own OpenRouter key stored locally.
+const DEFAULT_SETTINGS = {
+  authToken: "9876543210",
+  directMode: false,
+  openrouterApiKey: "",
+  openrouterModel: "google/gemini-2.0-flash-001",
+  displayName: "cleo",
+  avatarGradient: ["#2980B9", "#6dd5fa"],
+};
+
+async function getSettings() {
+  const store = await chrome.storage.local.get(SETTINGS_KEY);
+  return { ...DEFAULT_SETTINGS, ...(store[SETTINGS_KEY] || {}) };
+}
 
 chrome.runtime.onInstalled.addListener(({ reason }) => {
   console.log(`Cleo installed. Reason: ${reason}`);
@@ -275,6 +295,10 @@ async function startTask(task, requestedChatId, mode = "normal") {
 
   await attachDebugger(tab.id);
 
+  // Fixed for the lifetime of this run so a settings change mid-task can't
+  // switch backends partway through.
+  const settings = await getSettings();
+
   const state = {
     running: true,
     chatId: targetChat.id,
@@ -282,6 +306,7 @@ async function startTask(task, requestedChatId, mode = "normal") {
     windowId: tab.windowId,
     task: String(task).trim(),
     mode: mode === "research" ? "research" : "normal",
+    settings,
     step: targetChat.lastStep || 0,
     history: targetChat.taskHistory || [],
     findings: targetChat.findings || [],
@@ -304,12 +329,24 @@ async function startTask(task, requestedChatId, mode = "normal") {
   // loop runs fine on the raw task if compilation fails.
   status(state.chatId, "Compiling task...");
   try {
-    const response = await fetch(`${BACKEND_BASE}/compile`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: state.task, spec: targetChat.spec || null }),
-    });
-    const body = await response.json();
+    let body;
+    if (settings.directMode) {
+      if (!settings.openrouterApiKey) {
+        throw new Error("Direct mode is on but no OpenRouter API key is set (see settings)");
+      }
+      body = await directCompile(state.task, targetChat.spec || null, {
+        apiKey: settings.openrouterApiKey,
+        model: settings.openrouterModel,
+      });
+    } else {
+      const response = await fetch(`${BACKEND_BASE}/compile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${settings.authToken}` },
+        body: JSON.stringify({ text: state.task, spec: targetChat.spec || null }),
+      });
+      body = await response.json();
+      if (!response.ok && body.error) throw new Error(body.error);
+    }
     if (body.spec) {
       state.spec = body.spec;
       targetChat.spec = body.spec;
@@ -523,7 +560,7 @@ async function runTaskLoop(chatId) {
     let decision;
     try {
       decision = await withTimeout(
-        askBackendStream(
+        askModel(
           {
             image: redacted.redactedImageUrl,
             tree,
@@ -537,7 +574,8 @@ async function runTaskLoop(chatId) {
           (delta) => {
             stepStreamText.push(delta);
             emit(chatId, "step-delta", { step, text: delta });
-          }
+          },
+          state.settings
         ),
         120000,
         "AI server did not respond in time"
@@ -545,7 +583,7 @@ async function runTaskLoop(chatId) {
     } catch (error) {
       log(chatId, `Step ${step}: ${error.message}; retrying once...`);
       decision = await withTimeout(
-        askBackendStream(
+        askModel(
           {
             image: redacted.redactedImageUrl,
             tree,
@@ -559,7 +597,8 @@ async function runTaskLoop(chatId) {
           (delta) => {
             stepStreamText.push(delta);
             emit(chatId, "step-delta", { step, text: delta });
-          }
+          },
+          state.settings
         ),
         120000,
         "AI server timed out twice"
@@ -799,12 +838,27 @@ async function resolveActionTargets(tabId, actions, snapshot) {
   }));
 }
 
-async function askBackendStream(payload, onDelta) {
+// Routes to the local Flask backend or straight to OpenRouter, per the
+// user's settings (sidepanel settings panel).
+async function askModel(payload, onDelta, settings) {
+  if (settings.directMode) {
+    if (!settings.openrouterApiKey) {
+      throw new Error("Direct mode is on but no OpenRouter API key is set (see settings)");
+    }
+    return directAskStream(payload, onDelta, {
+      apiKey: settings.openrouterApiKey,
+      model: settings.openrouterModel,
+    });
+  }
+  return askBackendStream(payload, onDelta, settings.authToken);
+}
+
+async function askBackendStream(payload, onDelta, authToken) {
   let response;
   try {
     response = await fetch(`${BACKEND_BASE}/ask_stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
       body: JSON.stringify({
         image_b64: payload.image,
         tree: payload.tree,
@@ -903,6 +957,7 @@ async function resumeInterruptedTasks() {
       windowId: null,
       task: chat.lastTask || "",
       mode: chat.mode === "research" ? "research" : "normal",
+      settings: await getSettings(),
       step: chat.lastStep || 0,
       history: chat.taskHistory || [],
       findings: chat.findings || [],

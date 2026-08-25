@@ -51,6 +51,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'; connect-src 'self' data: http://127.0.0.1:5001 http://localhost:5001;"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; object-src 'self'; connect-src 'self' data: http://127.0.0.1:5001 http://localhost:5001 https://openrouter.ai;"
   }
 }

@@ -12,6 +12,38 @@ let currentStepsBlock = null;
 let activeChatId = null;
 const runningChats = new Set();
 
+// ---------- settings (auth token, direct-OpenRouter mode, display name, avatar) ----------
+
+const SETTINGS_KEY = "cleo_settings";
+const DEFAULT_SETTINGS = {
+  authToken: "9876543210",
+  directMode: false,
+  openrouterApiKey: "",
+  openrouterModel: "google/gemini-2.0-flash-001",
+  displayName: "cleo",
+  avatarGradient: ["#2980B9", "#6dd5fa"],
+};
+
+let currentSettings = { ...DEFAULT_SETTINGS };
+
+async function loadSettings() {
+  const store = await chrome.storage.local.get(SETTINGS_KEY);
+  currentSettings = { ...DEFAULT_SETTINGS, ...(store[SETTINGS_KEY] || {}) };
+  return currentSettings;
+}
+
+function applyAvatarGradientCSS() {
+  const [c1, c2] = currentSettings.avatarGradient;
+  document.documentElement.style.setProperty(
+    "--user-avatar-gradient",
+    `linear-gradient(135deg, ${c1 || "#2980B9"}, ${c2 || "#6dd5fa"})`
+  );
+}
+
+// Settings must be loaded before the first render so the display name / avatar
+// gradient are correct from the start instead of flashing in after a beat.
+const settingsReady = loadSettings().then(applyAvatarGradientCSS);
+
 const SPIN_FRAMES = ["[/]", "[-]", "[\\]", "[_]"];
 let spinIndex = 0;
 
@@ -89,6 +121,10 @@ function addAnswerMessage(text) {
   div.className = "msg answer";
   const body = document.createElement("div");
   body.className = "msg-body markdown";
+  const prefix = document.createElement("span");
+  prefix.className = "answer-prefix";
+  prefix.textContent = `${currentSettings.displayName}: `;
+  body.appendChild(prefix);
   body.appendChild(sanitizeMarkdownHTML(marked.parse(text)));
   div.append(avatar("answer"), body);
   streamEl.appendChild(div);
@@ -251,6 +287,71 @@ document.getElementById("sidebar-toggle-btn").addEventListener("click", () => {
 
 document.getElementById("close-sidebar-btn").addEventListener("click", () => {
   chatsSidebar.classList.remove("open");
+});
+
+// ---------- settings panel ----------
+
+const settingsSidebar = document.getElementById("settings-sidebar");
+const authTokenInput = document.getElementById("settings-auth-token");
+const directModeInput = document.getElementById("settings-direct-mode");
+const directFieldsEl = document.getElementById("settings-direct-fields");
+const openrouterKeyInput = document.getElementById("settings-openrouter-key");
+const openrouterModelInput = document.getElementById("settings-openrouter-model");
+const displayNameInput = document.getElementById("settings-display-name");
+const avatarColor1Input = document.getElementById("settings-avatar-color1");
+const avatarColor2Input = document.getElementById("settings-avatar-color2");
+const avatarPreviewEl = document.getElementById("settings-avatar-preview");
+const settingsStatusEl = document.getElementById("settings-status");
+
+function updateDirectFieldsVisibility() {
+  directFieldsEl.classList.toggle("hidden", !directModeInput.checked);
+}
+
+function updateAvatarPreview() {
+  avatarPreviewEl.style.background = `linear-gradient(135deg, ${avatarColor1Input.value}, ${avatarColor2Input.value})`;
+}
+
+function fillSettingsForm() {
+  authTokenInput.value = currentSettings.authToken;
+  directModeInput.checked = currentSettings.directMode;
+  openrouterKeyInput.value = currentSettings.openrouterApiKey;
+  openrouterModelInput.value = currentSettings.openrouterModel;
+  displayNameInput.value = currentSettings.displayName;
+  avatarColor1Input.value = currentSettings.avatarGradient[0] || "#2980B9";
+  avatarColor2Input.value = currentSettings.avatarGradient[1] || "#6dd5fa";
+  updateDirectFieldsVisibility();
+  updateAvatarPreview();
+}
+
+document.getElementById("settings-toggle-btn").addEventListener("click", async () => {
+  await settingsReady;
+  fillSettingsForm();
+  settingsSidebar.classList.toggle("open");
+});
+
+document.getElementById("close-settings-btn").addEventListener("click", () => {
+  settingsSidebar.classList.remove("open");
+});
+
+directModeInput.addEventListener("change", updateDirectFieldsVisibility);
+avatarColor1Input.addEventListener("input", updateAvatarPreview);
+avatarColor2Input.addEventListener("input", updateAvatarPreview);
+
+document.getElementById("settings-save-btn").addEventListener("click", async () => {
+  currentSettings = {
+    authToken: authTokenInput.value.trim() || DEFAULT_SETTINGS.authToken,
+    directMode: directModeInput.checked,
+    openrouterApiKey: openrouterKeyInput.value.trim(),
+    openrouterModel: openrouterModelInput.value.trim() || DEFAULT_SETTINGS.openrouterModel,
+    displayName: displayNameInput.value.trim() || DEFAULT_SETTINGS.displayName,
+    avatarGradient: [avatarColor1Input.value, avatarColor2Input.value],
+  };
+  await chrome.storage.local.set({ [SETTINGS_KEY]: currentSettings });
+  applyAvatarGradientCSS();
+  settingsStatusEl.textContent = "saved";
+  setTimeout(() => {
+    settingsStatusEl.textContent = "";
+  }, 1500);
 });
 
 let refreshSeq = 0;
@@ -475,6 +576,7 @@ chrome.runtime.sendMessage({ action: "getTaskState" }, (state) => {
 
 // Restore the active chat transcript on open.
 chrome.runtime.sendMessage({ action: "getActiveChat" }, async (response) => {
+  await settingsReady;
   if (response?.chat) {
     activeChatId = response.chat.id;
     renderChat(response.chat);

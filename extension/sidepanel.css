@@ -189,6 +189,167 @@ body {
   color: #ff5555;
 }
 
+/* settings panel — mirrors .chats-sidebar but slides in from the right */
+.settings-toggle {
+  margin-left: auto;
+}
+
+.settings-sidebar {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 260px;
+  display: none;
+  flex-direction: column;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  z-index: 50;
+}
+
+.settings-sidebar.open {
+  display: flex;
+}
+
+.settings-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-label {
+  display: block;
+  color: var(--dim);
+  font-size: 11px;
+  margin-bottom: -4px;
+}
+
+.settings-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11px;
+}
+
+.settings-input:focus {
+  outline: 1px solid var(--fg);
+}
+
+/* checkbox — ported from minima (minima.namishh.com#checkbox) */
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.checkbox-control {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: transparent;
+}
+
+.checkbox-check {
+  transform: scale(0);
+}
+
+.checkbox-input:checked ~ .checkbox-control {
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
+}
+
+.checkbox-input:checked ~ .checkbox-control .checkbox-check {
+  transform: scale(1);
+}
+
+.checkbox-input:focus ~ .checkbox-control {
+  outline: none;
+  border-color: var(--fg);
+}
+
+.checkbox-input:disabled ~ .checkbox-control {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sr-only-input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  pointer-events: none;
+}
+
+.settings-direct-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+}
+
+.settings-direct-fields.hidden {
+  display: none;
+}
+
+.settings-gradient-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-gradient-row input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: none;
+  cursor: pointer;
+}
+
+.settings-avatar-preview {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.settings-save {
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.settings-save:hover {
+  background: var(--surface);
+}
+
+.settings-status {
+  font-size: 11px;
+  color: var(--dim);
+  min-height: 14px;
+}
+
 /* messages */
 .msg {
   display: flex;
@@ -207,7 +368,7 @@ body {
 }
 
 .avatar.user {
-  background: linear-gradient(135deg, #2980B9, #6dd5fa, #ffffff);
+  background: var(--user-avatar-gradient, linear-gradient(135deg, #2980B9, #6dd5fa, #ffffff));
 }
 
 .msg-body {
@@ -219,8 +380,7 @@ body {
   color: var(--dim);
 }
 
-.msg.answer .msg-body::before {
-  content: "cleo: ";
+.answer-prefix {
   color: var(--dim);
 }
 
