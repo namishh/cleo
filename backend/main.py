@@ -59,11 +59,12 @@ ACTION_SPACE = {
     "fail": "The task cannot be completed; include a reason.",
 }
 
-SYSTEM_PROMPT = f"""You are a browser automation agent. You receive:
-1. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them).
-2. A compact accessibility tree listing actionable elements with [id], role, sanitized name, position (x,y,w,h), state, and safe link href/image alt metadata.
+SYSTEM_PROMPT = f"""You are a browser automation agent executing a compiled task spec. You receive:
+1. The task spec: goal, task_type, success_criteria, constraints, ambiguities.
+2. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them).
+3. A compact accessibility tree listing actionable elements with [id], role, sanitized name, position (x,y,w,h), state, and safe link href/image alt metadata.
 
-Decide the next action(s) to progress the user's task.
+Decide the next action(s) to progress toward the success criteria.
 
 Available actions (return one JSON object per action):
 {json.dumps(ACTION_SPACE, indent=2)}
@@ -87,7 +88,8 @@ Rules:
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
 - To move to a different site or jump straight to a known page, use navigate with a full URL — it is faster than clicking through menus.
 - End the list with {{"type": "done"}} only when the task is fully complete.
-- Completion check: before doing anything else, ask yourself "is the task already achieved on this screen?" If yes, return done immediately instead of continuing to act.
+- Completion check: compare the screen against the spec's success_criteria. Every criterion met → return done (or the answer). If yes, return done immediately instead of continuing to act.
+- The spec's constraints (brand, feature, budget, quantity...) are hard requirements. Do not drift from them mid-task, and do not forget filters you already applied.
 - Reporting rule: if the task asks you to find, read, extract, calculate, or compare ANY information (totals, percentages, prices, names, counts), you MUST finish with an answer containing the result — e.g. {{"answer": "Total lectures: 40, attended: 32 (80%)"}} with empty actions. Do the math yourself from the values you read. NEVER return done for such tasks without an answer; a bare done means the user gets nothing.
 - {{"type": "done"}} is only for tasks where nothing needs to be reported back (e.g. pure navigation, clicking a button). If useful context remains, include it as a summary field: {{"type": "done", "summary": "..."}}.
 - Research-style tasks (find, look for, compare, list, cheapest/best X, summarize top N): once the sorted/filtered results are on screen, open each relevant item (click its link), read its details, store the key facts with a remember action, then use back to return to the list and open the next item. After collecting all items, return an answer summarizing the findings — e.g. the top N items with names, prices, and any requested details — with an empty actions list. Do not keep scrolling after the requested results are visible.
@@ -114,8 +116,10 @@ def _image_to_data_url(file_storage=None, b64=None) -> str:
     raise ValueError("no image provided (send 'image' file or 'image_b64' field)")
 
 
-def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", findings=None, stream: bool = False):
+def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", findings=None, spec=None, stream: bool = False):
     user_text = f"Task: {task}\n\nAccessibility tree:\n{tree}"
+    if spec:
+        user_text = "Task spec:\n" + json.dumps(spec, indent=2) + "\n\n" + user_text
     if findings:
         user_text += "\n\nFacts remembered from earlier pages:\n" + json.dumps(findings, indent=2)
     if history:
@@ -249,6 +253,7 @@ def ask():
             history = body.get("history", [])
             hint = body.get("hint", "")
             findings = body.get("findings", [])
+            spec = body.get("spec")
         else:
             image_url = _image_to_data_url(
                 file_storage=request.files.get("image"),
@@ -259,11 +264,12 @@ def ask():
             history = json.loads(request.form.get("history", "[]"))
             hint = request.form.get("hint", "")
             findings = json.loads(request.form.get("findings", "[]"))
+            spec = json.loads(request.form.get("spec", "null"))
 
         if not tree and not image_url:
             return jsonify({"error": "tree or image required"}), 400
 
-        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint, findings)
+        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint, findings, spec)
         return jsonify({"actions": actions, "note": note, "answer": answer})
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return jsonify({"error": str(e)}), 400
@@ -281,13 +287,14 @@ def ask_stream():
         history = body.get("history", [])
         hint = body.get("hint", "")
         findings = body.get("findings", [])
+        spec = body.get("spec")
     except (ValueError, KeyError) as e:
         return jsonify({"error": str(e)}), 400
 
     def generate():
         accumulated = []
         try:
-            stream = _ask_openrouter(image_url, tree, task, history, hint, findings, stream=True)
+            stream = _ask_openrouter(image_url, tree, task, history, hint, findings, spec, stream=True)
             for chunk in stream:
                 text = _extract_text(chunk)
                 if text:
@@ -308,6 +315,57 @@ def ask_stream():
         mimetype="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+TASK_COMPILER_PROMPT = """You are a task compiler for a browser automation agent. Convert the user's raw request into an execution spec. Do not write prose. Do not add features the user didn't ask for. Infer reasonable defaults but list them under "ambiguities".
+
+Output a JSON object with exactly these fields:
+{
+  "goal": "one sentence, imperative, no fluff",
+  "task_type": "one of [navigate_only, form_fill, research_ranked, research_single, extract_data, question, transaction]",
+  "success_criteria": ["1-4 checkable statements about the END STATE of the browser, not the steps to get there"],
+  "constraints": {"only explicit or strongly-implied parameters, e.g. brand, feature, budget, quantity; null if none"},
+  "ambiguities": ["anything you guessed or the user left vague"],
+  "expected_answer_format": "how the final answer should be presented, e.g. 'top 5 with name and price', or null if nothing needs reporting"
+}
+
+Rules:
+- success_criteria describe END STATES, never actions. "Results sorted by price ascending" is good. "Click the sort button" is bad — clicking is the agent's job.
+- If the request is a question (sum, compare, what is), set task_type=question and describe the expected answer format.
+- Output only the JSON object.
+"""
+
+
+@app.post("/compile")
+def compile_task():
+    """Intermediate model: raw user request -> structured execution spec."""
+    try:
+        text = (request.get_json(force=True).get("text") or "")[:2000]
+        if not text.strip():
+            return jsonify({"error": "text required"}), 400
+        existing = request.get_json(force=True).get("spec")
+        prompt = TASK_COMPILER_PROMPT
+        user_content = text
+        if existing:
+            user_content = f"Current spec:\n{json.dumps(existing, indent=2)}\n\nUser follow-up: {text}\n\nReturn the updated spec."
+        response = client.chat.send(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=400,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or ""
+        start, end = raw.find("{"), raw.rfind("}")
+        spec = json.loads(raw[start : end + 1])
+        return jsonify({"spec": spec})
+    except (ValueError, KeyError, json.JSONDecodeError) as e:
+        return jsonify({"error": f"spec compilation failed: {e}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"OpenRouter request failed: {e}"}), 502
 
 
 @app.get("/health")

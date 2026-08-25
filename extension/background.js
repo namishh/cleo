@@ -267,6 +267,8 @@ async function startTask(task, requestedChatId) {
     step: targetChat.lastStep || 0,
     history: targetChat.taskHistory || [],
     findings: targetChat.findings || [],
+    spec: targetChat.spec || null,
+    spec: targetChat.spec || null,
     lastTreeHash: null,
     stallCount: 0,
     scrollRun: 0,
@@ -275,6 +277,30 @@ async function startTask(task, requestedChatId) {
   updateKeepalive();
 
   targetChat.entries.push({ t: "user", text: state.task, ts: Date.now() });
+
+  // Compile the task spec with the intermediate model (also re-compiles on
+  // follow-up messages, diffing against the existing spec). Non-fatal: the
+  // loop runs fine on the raw task if compilation fails.
+  status(state.chatId, "Compiling task...");
+  try {
+    const response = await fetch(`${BACKEND_BASE}/compile`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: state.task, spec: targetChat.spec || null }),
+    });
+    const body = await response.json();
+    if (body.spec) {
+      state.spec = body.spec;
+      targetChat.spec = body.spec;
+      log(state.chatId, `Task compiled (${body.spec.task_type}): ${body.spec.goal}`);
+      if (body.spec.ambiguities?.length) {
+        log(state.chatId, `Assumptions: ${body.spec.ambiguities.join("; ")}`);
+      }
+    }
+  } catch (error) {
+    log(state.chatId, `Task compilation skipped: ${error.message}`);
+  }
+
   if (!targetChat.customTitle) {
     targetChat.title = titleFromMessage(state.task);
     emit(targetChat.id, "title", { title: targetChat.title });
@@ -449,6 +475,7 @@ async function runTaskLoop(chatId) {
             history: state.history.slice(-20),
             hint,
             findings: state.findings,
+            spec: state.spec,
           },
           (delta) => {
             stepStreamText.push(delta);
@@ -469,6 +496,7 @@ async function runTaskLoop(chatId) {
             history: state.history.slice(-20),
             hint: (hint ? hint + " " : "") + "Previous attempt timed out; respond concisely.",
             findings: state.findings,
+            spec: state.spec,
           },
           (delta) => {
             stepStreamText.push(delta);
@@ -748,6 +776,7 @@ async function resumeInterruptedTasks() {
       step: chat.lastStep || 0,
       history: chat.taskHistory || [],
       findings: chat.findings || [],
+      spec: chat.spec || null,
       lastTreeHash: null,
       stallCount: 0,
       scrollRun: 0,

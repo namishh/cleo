@@ -84,15 +84,15 @@ pin tab via chrome.debugger ──────────────┐
            ▼                              │
 ┌───────────────────────┐                 │
 │ ACT                   │                 │
+│ guided by the spec's  │                 │
+│ success_criteria      │
 │ · click / type / key  │                 │
 │ · scroll / drag /     │                 │
 │   hover               │                 │
 │ · navigate / back /   │                 │
 │   forward             │                 │
 │ · download / pdf /    │                 │
-│   screenshot /        │                 │
-│   clipboard           │                 │
-│ · read_text /         │                 │
+│   read_text /         │                 │
 │   scroll_into_view /  │                 │
 │   remember            │                 │
 │ · adopt new tabs,     │                 │
@@ -100,11 +100,13 @@ pin tab via chrome.debugger ──────────────┐
 └──────────┬────────────┘                 │
            │                              │
            └──────────────────────────────┘
-                  loop until done /
-                  answer / fail / 50 steps
+  loop: screen checked against the
+  spec's success_criteria until done /
+  answer / fail / 50 steps
 ```
 
-- **Per-chat isolation** — each chat has its own state (tab, history, findings, step counter); multiple chats run in parallel on different tabs.
+- **Task compiler** — an intermediate model turns vague requests into a structured spec (goal, task type, success criteria, constraints, ambiguities) once per task; follow-ups re-compile against the existing spec. The vision model checks every screen against the success criteria, which makes "done" a checkable condition instead of a feeling.
+- **Per-chat isolation** — each chat has its own state (tab, history, findings, step counter, spec); multiple chats run in parallel on different tabs.
 - **Resumable** — steps persist immediately; if the service worker is recycled, interrupted tasks auto-resume.
 - **Self-healing** — debugger re-attach, new-tab adoption, screenshot fallbacks, backend watchdog, offscreen retry.
 - **Notified** — desktop notification when a background chat finishes.
@@ -116,6 +118,7 @@ A privacy-first browser automation agent. You give it a task in plain English ("
 
 **Quick features**
 
+- Task compiler: an intermediate model turns vague requests into a structured spec — goal, task type, success criteria, constraints, ambiguities — so "done" is checkable, not a feeling
 - Chrome side-panel chat interface with streaming responses
 - Collapsible per-message reasoning: screenshot + note + commands for every step
 - Multiple chats, running in parallel, persisted locally (`unlimitedStorage`)
