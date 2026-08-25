@@ -1,5 +1,5 @@
 const FACE_MODEL_URL = chrome.runtime.getURL("models/yunet_fact_detection_may_2026.onnx");
-const BACKEND_URL = "http://127.0.0.1:5001/detect-pii";
+const KIJI_MODEL_URL = chrome.runtime.getURL("models/kiji-pii-model.onnx");
 const FACE_INPUT_W = 640;
 const FACE_INPUT_H = 480;
 const FACE_SCORE_THRESH = 0.3;
@@ -33,13 +33,15 @@ const STOP_LABELS = new Set([
 ]);
 
 let faceSession = null;
+let kijiSession = null;
+let kijiTokenizer = null;
+let kijiLabels = null;
+let kijiVocab = null;
 let tesseractWorker = null;
 
-// Tell onnxruntime-web where to find the WASM binaries.
+// Tell onnxruntime-web (v1.27) where to find its .mjs loader and .wasm binary.
 ort.env.wasm.wasmPaths = chrome.runtime.getURL("lib/");
-// Use single-threaded WASM so onnxruntime loads .wasm directly instead of
-// dynamically importing .mjs worker modules (which MV3 extension pages cannot
-// load reliably).
+// Single-threaded WASM: no cross-origin worker isolation needed in offscreen docs.
 ort.env.wasm.numThreads = 1;
 
 let currentJobChatId = null;
@@ -58,6 +60,95 @@ async function getFaceSession() {
     });
   }
   return faceSession;
+}
+
+async function getKijiSession() {
+  if (!kijiSession) {
+    reportProgress(77, "Loading Kiji PII model...");
+    kijiSession = await ort.InferenceSession.create(KIJI_MODEL_URL, {
+      executionProviders: ["wasm"],
+    });
+  }
+  return kijiSession;
+}
+
+async function loadKijiVocab() {
+  if (!kijiVocab) {
+    reportProgress(76, "Loading Kiji tokenizer...");
+    const response = await fetch(chrome.runtime.getURL("models/kiji-tokenizer/vocab.txt"));
+    if (!response.ok) throw new Error(`Could not load Kiji vocab: ${response.status}`);
+    const text = await response.text();
+    const vocab = new Map();
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      const token = lines[i].trim();
+      if (token !== "") vocab.set(token, i);
+    }
+    kijiVocab = vocab;
+  }
+  return kijiVocab;
+}
+
+function wordPieceTokenize(word, vocab, unkId) {
+  if (vocab.has(word)) return [vocab.get(word)];
+  if (word.length > 100) return [unkId];
+  const ids = [];
+  let remaining = word;
+  let isFirst = true;
+  while (remaining.length > 0) {
+    let longest = "";
+    let longestId = -1;
+    for (let i = remaining.length; i > 0; i--) {
+      const sub = isFirst ? remaining.slice(0, i) : `##${remaining.slice(0, i)}`;
+      const id = vocab.get(sub);
+      if (id !== undefined) {
+        longest = sub;
+        longestId = id;
+        break;
+      }
+    }
+    if (!longest) return [unkId];
+    ids.push(longestId);
+    const matchedText = longest.startsWith("##") ? longest.slice(2) : longest;
+    remaining = remaining.slice(matchedText.length);
+    isFirst = false;
+  }
+  return ids;
+}
+
+async function getKijiTokenizer() {
+  if (!kijiTokenizer) {
+    const vocab = await loadKijiVocab();
+    const unkId = vocab.get("[UNK]");
+    if (unkId === undefined) throw new Error("Kiji vocab missing [UNK]");
+    kijiTokenizer = (text) => {
+      const trimmed = String(text ?? "").trim();
+      if (trimmed === "") return { input_ids: { data: [] } };
+      // Whole-word/special-token fast path.
+      if (vocab.has(trimmed)) return { input_ids: { data: [vocab.get(trimmed)] } };
+      const ids = [];
+      for (const whitespacePiece of trimmed.split(/\s+/)) {
+        if (!whitespacePiece) continue;
+        // Split on non-word characters, keeping delimiters, so "example.com"
+        // becomes ["example", ".", "com"] like BERT's BertPreTokenizer.
+        const pieces = whitespacePiece.split(/(\W+)/).filter(Boolean);
+        for (const piece of pieces) {
+          ids.push(...wordPieceTokenize(piece, vocab, unkId));
+        }
+      }
+      return { input_ids: { data: ids } };
+    };
+  }
+  return kijiTokenizer;
+}
+
+async function getKijiLabels() {
+  if (!kijiLabels) {
+    const response = await fetch(chrome.runtime.getURL("models/kiji-tokenizer/label_mappings.json"));
+    if (!response.ok) throw new Error(`Could not load Kiji labels: ${response.status}`);
+    kijiLabels = await response.json();
+  }
+  return kijiLabels.pii.id2label;
 }
 
 async function getTesseractWorker() {
@@ -198,22 +289,126 @@ function nms(boxes, scores, threshold) {
   return keep;
 }
 
+function tokenizerIds(result) {
+  const data = result?.input_ids?.data;
+  if (!data) throw new Error("PII tokenizer returned no input IDs");
+  return Array.from(data, Number);
+}
+
+function softmax(values) {
+  const max = Math.max(...values);
+  const exps = values.map((value) => Math.exp(value - max));
+  const total = exps.reduce((sum, value) => sum + value, 0);
+  return exps.map((value) => value / total);
+}
+
 async function detectKijiPii(words) {
   if (!words.length) return [];
 
-  const response = await fetch(BACKEND_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ words }),
+  const tokenizer = await getKijiTokenizer();
+  const session = await getKijiSession();
+  const idToLabel = await getKijiLabels();
+  const clsId = tokenizerIds(tokenizer("[CLS]", { add_special_tokens: false }))[0];
+  const sepId = tokenizerIds(tokenizer("[SEP]", { add_special_tokens: false }))[0];
+
+  const inputIds = [clsId];
+  const wordTokenRanges = [];
+  const usableWords = [];
+
+  for (const word of words) {
+    const ids = tokenizerIds(tokenizer(word.text, { add_special_tokens: false }));
+    if (inputIds.length + ids.length + 1 > 512) break;
+    const start = inputIds.length;
+    inputIds.push(...ids);
+    wordTokenRanges.push({ start, end: inputIds.length });
+    usableWords.push(word);
+  }
+  inputIds.push(sepId);
+
+  const length = inputIds.length;
+  const output = await session.run({
+    input_ids: new ort.Tensor(
+      "int64",
+      BigInt64Array.from(inputIds, BigInt),
+      [1, length]
+    ),
+    attention_mask: new ort.Tensor(
+      "int64",
+      BigInt64Array.from({ length }, () => 1n),
+      [1, length]
+    ),
   });
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Backend returned HTTP ${response.status}`);
+  const logits = output.pii_logits;
+  const dims = logits.dims;
+  const data = logits.data;
+  if (!dims || dims.length !== 3 || dims[0] !== 1 || dims[2] !== 53) {
+    throw new Error(`Unexpected Kiji PII output shape: ${dims}`);
   }
 
-  const result = await response.json();
-  return Array.isArray(result.regions) ? result.regions : [];
+  const classCount = dims[2];
+  const threshold = 0.5;
+  const predictions = [];
+
+  // Collapse WordPiece predictions to one BIO label per OCR word. Prefer the
+  // strongest non-O subtoken so CITY, ZIP, EMAIL, etc. survive tokenization.
+  for (const range of wordTokenRanges) {
+    let best = { label: "O", score: 0 };
+    for (let token = range.start; token < range.end; token++) {
+      const row = [];
+      for (let cls = 0; cls < classCount; cls++) {
+        row.push(data[token * classCount + cls]);
+      }
+      const probabilities = softmax(row);
+      for (let cls = 1; cls < classCount; cls++) {
+        if (probabilities[cls] > best.score) {
+          best = {
+            label: idToLabel[String(cls)] || "O",
+            score: probabilities[cls],
+          };
+        }
+      }
+    }
+    predictions.push(best.score >= threshold ? best : { label: "O", score: best.score });
+  }
+
+  const regions = [];
+  let active = null;
+  const flush = () => {
+    if (!active) return;
+    const selectedWords = usableWords.slice(active.start, active.end + 1);
+    regions.push([
+      Math.min(...selectedWords.map((w) => w.bbox.x0)),
+      Math.min(...selectedWords.map((w) => w.bbox.y0)),
+      Math.max(...selectedWords.map((w) => w.bbox.x1)),
+      Math.max(...selectedWords.map((w) => w.bbox.y1)),
+    ]);
+    active = null;
+  };
+
+  for (let index = 0; index < predictions.length; index++) {
+    const prediction = predictions[index];
+    const match = /^(B|I)-(.+)$/.exec(prediction.label);
+    if (!match) {
+      flush();
+      continue;
+    }
+
+    const [, prefix, type] = match;
+    if (
+      prefix === "B" ||
+      !active ||
+      active.type !== type ||
+      index !== active.end + 1
+    ) {
+      flush();
+      active = { start: index, end: index, type };
+    } else {
+      active.end = index;
+    }
+  }
+  flush();
+  return regions;
 }
 
 async function findPiiRegions(imageUrl, origW, origH) {

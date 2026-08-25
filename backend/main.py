@@ -26,8 +26,6 @@ from flask import Flask, Response, jsonify, request
 from openrouter import OpenRouter
 import dotenv
 
-from pii import find_pii_regions
-
 dotenv.load_dotenv()
 
 app = Flask(__name__)
@@ -373,27 +371,6 @@ def compile_task():
 @app.get("/health")
 def health():
     return jsonify({"ok": True, "model": MODEL})
-
-
-@app.post("/detect-pii")
-def detect_pii():
-    try:
-        body = request.get_json(force=True)
-        words = body.get("words", [])
-        if not isinstance(words, list):
-            return jsonify({"error": "words must be a list"}), 400
-        regions = find_pii_regions(words)
-        return jsonify({"regions": regions})
-    except Exception as e:
-        return jsonify({"error": f"PII detection failed: {e}"}), 502
-
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    return response
 
 
 if __name__ == "__main__":
