@@ -46,6 +46,9 @@ ACTION_SPACE = {
     "drag": "Drag from one coordinate to another. Requires numeric x, y, x2, y2.",
     "select": "Select an <option> by visible text inside a <select> at coordinates. Requires x, y and option.",
     "navigate": "Change the current tab's URL to move anywhere — a different site, a search results page (e.g. https://www.amazon.com/s?k=sony+headset), or a specific product page. Requires url.",
+    "open_tab": "Open a URL in a NEW background tab owned by this chat — use it to research in parallel without losing your place. Requires url.",
+    "switch_tab": "Switch work to another tab in this chat's pool. Requires tab (e.g. \"t2\"). The next observation will come from that tab.",
+    "close_tab": "Close a pool tab when you're done with it. Optional tab (defaults to current).",
     "scroll_into_view": "Scroll a tree element into view. Requires id.",
     "hover": "Hover over a tree element by id (preferred) or coordinates. With id, x/y are optional.",
     "pdf": "Save a printable PDF of the current page to a file. Optional filename (default page.pdf).",
@@ -87,6 +90,7 @@ Rules:
 - Example response (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
 - To move to a different site or jump straight to a known page, use navigate with a full URL — it is faster than clicking through menus.
+- The tree's first line lists this chat's tab pool. Use open_tab to research in parallel (e.g. open each product page in its own tab), switch_tab to move between them, and read_text after switching to read a tab's content. Actions apply to the current tab.
 - End the list with {{"type": "done"}} only when the task is fully complete.
 - Completion check: compare the screen against the spec's success_criteria. Every criterion met → return done (or the answer). If yes, return done immediately instead of continuing to act.
 - The spec's constraints (brand, feature, budget, quantity...) are hard requirements. Do not drift from them mid-task, and do not forget filters you already applied.

@@ -126,71 +126,6 @@ function status(chatId, message) {
 
 // ---------- debugger helpers ----------
 
-// ---------- tab pool (each chat owns the tabs it created) ----------
-
-// Handle open_tab / switch_tab / close_tab. These mutate the chat's tab pool
-// and always change what the next observation step will see, so the caller
-// continues the loop afterwards instead of executing more actions.
-async function handleTabPoolAction(state, action) {
-  if (action.type === "open_tab") {
-    if (!action.url) throw new Error("open_tab requires url");
-    let url = action.url;
-    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
-    const tab = await chrome.tabs.create({ url, active: false });
-    await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
-    await attachDebugger(tab.id);
-    const ref = `t${state.tabs.length + 1}`;
-    state.tabs.push(tab.id);
-    state.currentTab = tab.id;
-    state.tabId = tab.id;
-    await waitForTabLoad(tab.id);
-    return `opened ${ref} (tab ${tab.id}) in background: ${url}`;
-  }
-
-  if (action.type === "switch_tab") {
-    const wanted = String(action.tab ?? action.index ?? "").replace(/^t/i, "");
-    const index = parseInt(wanted, 10) - 1;
-    if (!Number.isInteger(index) || index < 0 || index >= state.tabs.length) {
-      throw new Error(
-        `switch_tab: unknown tab "${action.tab ?? wanted}". Pool: ${state.tabs.map((t, i) => `t${i + 1}`).join(", ")}`
-      );
-    }
-    const target = state.tabs[index];
-    if (target !== state.tabId) {
-      await attachDebugger(target);
-      chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
-      state.tabId = target;
-      state.currentTab = target;
-      await waitForTabLoad(target);
-    }
-    return `switched to ${ref(index)}`;
-  }
-
-  if (action.type === "close_tab") {
-    const wanted = action.tab ? String(action.tab).replace(/^t/i, "") : null;
-    const index = wanted ? parseInt(wanted, 10) - 1 : state.tabs.indexOf(state.currentTab);
-    if (!Number.isInteger(index) || index < 0 || index >= state.tabs.length) {
-      throw new Error(`close_tab: unknown tab`);
-    }
-    const closing = state.tabs[index];
-    state.tabs.splice(index, 1);
-    chrome.debugger.detach({ tabId: closing }).catch(() => {});
-    await chrome.tabs.remove(closing).catch(() => {});
-    if (state.currentTab === closing) {
-      state.currentTab = state.tabs[0] ?? null;
-      state.tabId = state.currentTab;
-      if (state.tabId) await attachDebugger(state.tabId);
-    }
-    return `closed tab ${closing}`;
-  }
-
-  throw new Error(`unknown tab pool action: ${action.type}`);
-}
-
-function ref(index) {
-  return `t${index + 1}`;
-}
-
 async function attachDebugger(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
@@ -407,6 +342,10 @@ function stopTask(chatId, reason = "Stopped") {
   updateKeepalive();
 
   chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
+  // Detach from any remaining pool tabs.
+  for (const tabId of state.tabs || []) {
+    if (tabId !== state.tabId) chrome.debugger.detach({ tabId }).catch(() => {});
+  }
   log(chatId, reason);
   notifyDone(state.tabId, reason);
   // Clear the running flag so interrupted chats aren't resumed as zombies.
@@ -524,7 +463,11 @@ async function runTaskLoop(chatId) {
     emit(chatId, "step-screenshot", { step, image: redacted.redactedImageUrl });
     log(chatId, `Step ${step}: redacted screenshot ready (faces: ${redacted.faceCount}, PII: ${redacted.piiCount})`);
 
-    const tree = snapshot.tree || "(no accessibility data)";
+    let tree = snapshot.tree || "(no accessibility data)";
+    const poolLine = state.tabs
+      .map((t, i) => `[t${i + 1}]${t === state.currentTab ? " (current)" : ""} tab ${t}`)
+      .join(", ");
+    tree = `Tabs: ${poolLine}\n\n${tree}`;
     status(chatId, `Step ${step}: asking AI server...`);
 
     const stepStreamText = [];
@@ -580,6 +523,30 @@ async function runTaskLoop(chatId) {
     let actions = Array.isArray(decision.actions) ? decision.actions : [];
     emit(chatId, "step-actions", { step, actions });
     log(chatId, `Step ${step}: server returned ${actions.length} action(s)`);
+
+    // Tab pool actions (open_tab / switch_tab / close_tab) change which tab
+    // the chat works in. Run them, then let the next observation step capture
+    // the (possibly new) current tab.
+    const poolActions = actions.filter((a) =>
+      ["open_tab", "switch_tab", "close_tab"].includes(a.type)
+    );
+    if (poolActions.length) {
+      for (const action of poolActions) {
+        try {
+          const detail = await handleTabPoolAction(state, action);
+          log(chatId, `Step ${step}: ${action.type} OK — ${detail}`);
+        } catch (error) {
+          log(chatId, `Step ${step}: ${action.type} FAILED — ${error.message}`);
+        }
+      }
+      const rest = actions.filter((a) => !poolActions.includes(a));
+      if (rest.length === 0) {
+        await sleep(400);
+        continue;
+      }
+      actions = rest;
+      emit(chatId, "step-actions", { step, actions });
+    }
 
     // Persist the step (reasoning, screenshot, actions) immediately so it
     // survives even if this step takes an early exit.
@@ -901,6 +868,8 @@ async function adoptNewTab(state, newTabId) {
   const oldTabId = state.tabId;
   log(state.chatId, `Page opened a new tab; switching task to tab ${newTabId}`);
   state.tabId = newTabId;
+  state.currentTab = newTabId;
+  if (!state.tabs.includes(newTabId)) state.tabs.push(newTabId);
   await attachDebugger(newTabId);
   chrome.debugger.detach({ tabId: oldTabId }).catch(() => {});
   await waitForTabLoad(newTabId, 10000);
