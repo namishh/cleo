@@ -239,6 +239,48 @@ flowchart LR
     Note["Nothing above this line<br/>ever leaves the device"] -.-> Offscreen
 ```
 
+## Compact overviews
+
+Slide-sized versions of the above — one component at a time.
+
+**Backend**
+
+```mermaid
+flowchart LR
+    Ext["Extension<br/>service worker"] -->|Bearer token| Auth["Flask backend<br/>auth check"]
+    Auth --> Compile["/compile<br/>spec JSON"]
+    Auth --> Ask["/ask_stream<br/>SSE actions"]
+    Compile --> OR["OpenRouter<br/>vision LLM"]
+    Ask --> OR
+    OR --> Parse["parse + validate<br/>JSON actions"]
+    Parse --> Ext
+```
+
+**Client + ONNX**
+
+```mermaid
+flowchart LR
+    Panel["Side panel<br/>chat UI"] --> Worker["Service worker<br/>task loop"]
+    Worker -->|screenshot| Offscreen2["Offscreen doc<br/>ONNX models"]
+    Offscreen2 -->|redacted image| Worker
+    Worker -->|image + tree| Model["Backend / OpenRouter"]
+    Model -->|actions| Worker
+    Worker -->|CDP| Page["Browser tab"]
+```
+
+**ONNX redaction**
+
+```mermaid
+flowchart LR
+    Img["Screenshot"] --> Kiji2["Kiji PII model<br/>ONNX · 53 labels"]
+    Img --> YuNet2["YuNet<br/>ONNX face detector"]
+    Kiji2 --> Boxes["PII boxes"]
+    YuNet2 --> Faces["Face boxes"]
+    Boxes --> Merge2["Merge + dedupe"]
+    Faces --> Merge2
+    Merge2 --> Redacted2["Redacted image"]
+```
+
 - **Task compiler** — an intermediate model turns vague requests into a structured spec (goal, task type, success criteria, constraints, ambiguities) once per task; follow-ups re-compile against the existing spec. It can run a stronger/pricier model than the per-step loop (`OPENROUTER_COMPILATION_MODEL`), since it runs once per task instead of once per step. The vision model checks every screen against the success criteria, which makes "done" a checkable condition instead of a feeling.
 - **Research mode** — a dedicated button that forces real browsing over answering from the model's own training knowledge: it must open and read at least one real source (Google/arxiv/Scholar/YouTube/Reddit/marketplace/Wikipedia, routed by question type) before it's allowed to answer, enforced deterministically in code, not just requested in the prompt. Ends with a detailed, source-attributed report and an automatically-compiled sources list.
 - **Per-chat isolation** — each chat has its own state (tab, tab pool, history, findings, step counter, spec, mode); multiple chats run in parallel on different tabs.
