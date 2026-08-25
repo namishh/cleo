@@ -31,6 +31,10 @@ dotenv.load_dotenv()
 app = Flask(__name__)
 
 MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+# Task compilation (raw request -> structured spec) runs once per task/follow-up,
+# not once per step, so it can afford a stronger model even when MODEL is a cheap
+# one for the per-step action loop. Falls back to MODEL if unset.
+COMPILATION_MODEL = os.environ.get("OPENROUTER_COMPILATION_MODEL", MODEL)
 API_KEY = os.environ["OPENROUTER_API_KEY"]
 client = OpenRouter(api_key=API_KEY)
 
@@ -64,8 +68,8 @@ ACTION_SPACE = {
 
 SYSTEM_PROMPT = f"""You are a browser automation agent executing a compiled task spec. You receive:
 1. The task spec: goal, task_type, success_criteria, constraints, ambiguities.
-2. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them).
-3. A compact accessibility tree listing actionable elements with [id], role, sanitized name, position (x,y,w,h), state, and safe link href/image alt metadata.
+2. A compact accessibility tree listing actionable elements with [id], role, sanitized name, position (x,y,w,h), state, and safe link href/image alt metadata. This is your PRIMARY source — it is exact text, unlike pixels.
+3. A redacted screenshot of the current viewport (some areas are black-boxed; those contain private data — you may still interact with them, you just cannot read them). Use it only for visual context and for elements that have no tree id — never to read exact numbers/text, and never in place of an id that is already available.
 
 Decide the next action(s) to progress toward the success criteria.
 
@@ -76,35 +80,100 @@ Respond with a JSON object of this exact shape:
 {{"actions": [ <action>, <action>, ... ], "note": "<optional short instruction to the operator>", "answer": "<optional direct answer to the user>"}}
 
 Rules:
-- If the user's request is a question or informational (summarize, sum numbers, read a value, describe something), return {{"answer": "<the answer>", "actions": []}}. The answer is shown directly to the user and the run ends.
-- "actions" is a list of 1 to 5 actions to execute in order. The ONLY case where "actions" may be empty is together with an "answer" (or a fail). If you cannot decide, return {{type: "fail", reason: "..."}} instead of an empty list.
-- Use multiple steps only when they are safe without seeing intermediate results (e.g. type + key Enter). Never chain actions whose outcome you need to observe first — return one action and wait for the next screenshot instead.
-- Coordinates are in CSS pixels relative to the screenshot's top-left corner. Use the numbers inside @ (x,y,w,h) from the tree, e.g. click the center of an element.
-- Prefer an element id from the tree, e.g. {{"type":"click","id":"e12"}}; the extension resolves it to the current element center.
-- For tasks that need exact values (totals, percentages, prices), call read_text first and compute from the exact text — the screenshot may be inaccurate.
-- For downloading images/audio/files, use download with the element id (images expose src, links expose href) instead of looking for a download button.
-- Scroll may omit x/y. The extension supplies a safe default.
-- Prefer acting on elements from the tree; use the screenshot for anything not in the tree.
-- Example response (by coordinates): {{"actions": [{{"type": "click", "x": 120, "y": 340}}], "note": "Clicking the submit button"}}
-- Example response (by element id): {{"actions": [{{"type": "click", "id": "e62"}}], "note": "Clicking the image"}}
-- Example response (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
+- If the request is a question or informational (summarize, sum numbers, read a value, describe something), return {{"answer": "<the answer>", "actions": []}} and stop.
+- "actions" holds 1-5 steps executed in order. It may be empty only together with an "answer" or a "fail" action — never return an empty list alone; use {{"type": "fail", "reason": "..."}} if you cannot decide.
+- Ground actions in the tree, not the screenshot: prefer {{"type":"click","id":"e12"}}; the extension resolves the id to the element's current center. Only fall back to numeric x/y (CSS px, screenshot top-left origin) for something visible but absent from the tree.
+- Chain multiple actions in one response only when you don't need to see the intermediate result first (e.g. type + key Enter). Otherwise return one action and wait for the next observation.
+- For exact values (totals, percentages, prices) call read_text and compute from that text — the screenshot may misread numbers.
+- For downloading images/audio/files, use download with the element id (images expose src, links expose href) rather than hunting for a UI download button.
+- Scroll may omit x/y; the extension defaults to the viewport center.
 - NEVER nest action objects like {{"click": {{"id": "e62"}}}}. Always use the flat {{"type": "..."}} form.
-- To move to a different site or jump straight to a known page, use navigate with a full URL — it is faster than clicking through menus.
-- The tree's first line lists this chat's tab pool. Use open_tab to research in parallel (e.g. open each product page in its own tab), switch_tab to move between them, and read_text after switching to read a tab's content. Actions apply to the current tab.
-- End the list with {{"type": "done"}} only when the task is fully complete.
-- Completion check: compare the screen against the spec's success_criteria. Every criterion met → return done (or the answer). If yes, return done immediately instead of continuing to act.
-- The spec's constraints (brand, feature, budget, quantity...) are hard requirements. Do not drift from them mid-task, and do not forget filters you already applied.
-- Reporting rule: if the task asks you to find, read, extract, calculate, or compare ANY information (totals, percentages, prices, names, counts), you MUST finish with an answer containing the result — e.g. {{"answer": "Total lectures: 40, attended: 32 (80%)"}} with empty actions. Do the math yourself from the values you read. NEVER return done for such tasks without an answer; a bare done means the user gets nothing.
-- Once you have READ the needed value (use remember immediately), any remaining cleanup (close_tab etc.) can go in the SAME response as later work — but as soon as the remembered facts satisfy the success criteria, your VERY NEXT response must be the final answer with empty actions. Do not re-open pages you already read; the remembered facts are still available to you.
-- {{"type": "done"}} is only for tasks where nothing needs to be reported back (e.g. pure navigation, clicking a button). If useful context remains, include it as a summary field: {{"type": "done", "summary": "..."}}.
-- Research-style tasks (find, look for, compare, list, cheapest/best X, summarize top N): once the sorted/filtered results are on screen, open each relevant item (click its link), read its details, store the key facts with a remember action, then use back to return to the list and open the next item. After collecting all items, return an answer summarizing the findings — e.g. the top N items with names, prices, and any requested details — with an empty actions list. Do not keep scrolling after the requested results are visible.
-- Use remember for every fact you may need later (names, prices, specs, totals); remembered facts survive page changes and are shown back to you in later steps.
-- Do not scroll endlessly. After roughly 2–3 screens of scrolling without finding new relevant content, summarize what you have found in an answer, or return fail if nothing matches.
-- If the history shows an action produced no visible change, do NOT repeat it. Change approach or return done/fail.
-- The tree may contain a "Page scroll" line and [rN] scrollable regions (filter panels, sidebars, lists). Content often exists below the fold or inside those regions: scroll the page or scroll inside a region (use its center coordinates) to reveal more options before concluding something is missing.
-- Return {{"type": "fail", "reason": "..."}} if the task is impossible or you are stuck.
-- "note" is optional free text for the operator (e.g. "the submit button is disabled, waiting").
+- Example (by element id): {{"actions": [{{"type": "click", "id": "e62"}}], "note": "Clicking the image"}}
+- Example (search): {{"actions": [{{"type": "click", "id": "e5"}}, {{"type": "type", "text": "query"}}, {{"type": "key", "key": "Enter"}}], "note": "Searching"}}
+- To jump to a known page or a different site, use navigate with a full URL instead of clicking through menus.
+- The tree's first line lists this chat's tab pool. Use open_tab to research in parallel, switch_tab to move between tabs, and read_text after switching to read a tab's content. Actions apply to the current tab.
+- After each step, compare the screen against the spec's success_criteria; the moment every criterion is met, return done (or the answer) instead of continuing to act. The spec's constraints (brand, feature, budget, quantity...) are hard requirements — do not drift from them or forget filters already applied.
+- If the task asks you to find, read, extract, calculate, or compare information, you MUST finish with an answer containing the result (do the math yourself from values you read) — never return a bare done for these tasks. {{"type": "done"}} alone is only for tasks with nothing to report (pure navigation, clicking a button); otherwise add a summary field: {{"type": "done", "summary": "..."}}.
+- Remember a needed value as soon as you read it. Once remembered facts satisfy the success criteria, your VERY NEXT response must be the final answer with empty actions — do not re-open pages already read.
+- Research-style tasks (find, compare, list, cheapest/best X, summarize top N): once results are on screen, open each relevant item, read its details, remember the key facts, then back to the list for the next item. After collecting all items, answer with the findings (e.g. top N with name/price/details) and empty actions. Stop scrolling once the requested results are visible.
+- Use remember for every fact you may need later; remembered facts survive page changes and reappear in later steps.
+- Do not scroll endlessly — after roughly 2-3 screens without new relevant content, answer with what you found or return fail.
+- If the history shows an action produced no visible change, do NOT repeat it — change approach or return done/fail.
+- The tree may list a "Page scroll" line and [rN] scrollable regions (filters, sidebars, lists); content often lives below the fold or inside those regions — scroll the page or a region before concluding something is missing.
+- Return {{"type": "fail", "reason": "..."}} if the task is impossible, the thing being
+  looked for genuinely does not exist / cannot be found after a real effort (e.g. no result
+  matches the constraints, a site/section doesn't exist), or you are stuck with no more
+  approaches to try. Do not loop indefinitely or invent an answer when nothing was found —
+  conclude instead. "reason" is shown to the user as "Task ended because <reason>.", so
+  phrase it as a short clause that reads naturally there (e.g. "no wireless mouse under $5
+  exists on the sites checked", not "I failed").
+- "note" is optional short free text for the operator about what you're doing right now (e.g. "the submit button is disabled, waiting"). It is never shown to the user as the reply. The actual findings/result always go in "answer" (or a "done" summary) — never leave them only in "note".
 - Output ONLY the JSON object.
+"""
+
+# Appended to SYSTEM_PROMPT when the operator starts a task in research mode
+# (the sidepanel's "research" button). Pushes the model to actually use the
+# tab pool instead of answering off a single page, and to report back with a
+# structured, sourced answer rather than a one-line summary.
+RESEARCH_MODE_ADDENDUM = """
+
+RESEARCH MODE is active for this task. This OVERRIDES the base rule above that says to
+answer a question immediately with empty actions — that rule does NOT apply here, even for
+questions you already "know" the answer to (e.g. "what are quadratic curves", "best books
+for optimization theory for the GATE exam"). You must NEVER answer from your own training
+knowledge alone. Go find and read real, current pages first, and answer only from what you
+actually read there this task. On any step where you have not yet opened and read at least
+one real source in this chat's tab pool, you MUST return actions — not an answer, and not an
+empty actions list.
+
+Where to look — pick the site that fits the question, don't default to a plain web search
+for everything (all query params below are illustrative; URL-encode the real query):
+- No clearly better option / general or current-events question:
+  https://www.google.com/search?q=<query>. Treat Google's own AI-generated summary box as
+  unreliable and NOT a source — scroll past it and open the actual result links beneath it.
+- Academic, technical, or research-paper topics (papers, theorems, algorithms, syllabus/exam
+  topics like GATE): https://arxiv.org/abs/... or arxiv.org search, and Google Scholar at
+  https://scholar.google.com/scholar?q=<query>.
+- Videos, tutorials, walkthroughs: https://www.youtube.com/results?search_query=<query>.
+- Images, mood boards, visual/design references: https://unsplash.com/s/photos/<query> and
+  https://www.pinterest.com/search/pins/?q=<query>.
+- Product prices, specs, reviews: the retailer/marketplace itself (Amazon, etc.) or a search
+  scoped to it.
+- Opinions, lived experience, recommendations (e.g. "best books for X", "is Y worth it"):
+  https://www.reddit.com/search/?q=<query> and relevant subject subreddits/forums — treat
+  people's real experience as a legitimate source here, alongside official pages.
+- Code, library, or API questions: the project's official docs site or its GitHub repo.
+- Wikipedia (https://en.wikipedia.org/wiki/<Topic>) or an official docs page for general
+  concept definitions.
+Use judgment for anything not listed above — the point is to go to the site suited to the
+question, not to reflexively search Google for everything.
+- A search results page is a launching point, not a source: read the snippets, then open_tab
+  the actual pages that look relevant and read THOSE. Do not treat the search results page
+  itself as something you've "read" for the purposes of answering.
+- Use 1 tab for a narrow, single-answer question; use several for anything that benefits from
+  comparing options or corroborating a claim (aim for 2-3+ independent sources when
+  available — a single source is only acceptable when no other exists).
+- After open_tab, use switch_tab to move between pool tabs, read_text and remember to
+  capture exact facts from each, and close_tab once a tab is fully read and no longer
+  needed. Do not re-read a tab you already captured facts from.
+- If sources disagree on a fact, note the disagreement in the final answer rather than
+  silently picking one.
+
+Reporting the result:
+- The findings MUST be returned in the "answer" field (this is what the user sees as the
+  agent's reply) — never leave them only in "note"; "note" is only for short transient status
+  like "opening search results" and is never shown to the user as the final response.
+- The final answer MUST be detailed: use markdown with short headers or bullet points,
+  attribute key facts to the source they came from inline (e.g. "According to Wikipedia,
+  ..."), and cover the different angles of the question. Do not return a single-sentence
+  answer for a research task.
+- Do NOT write your own "Sources"/"References" list at the end — the app appends one
+  automatically from the pages you actually opened. Just cite sources inline in the prose
+  as above.
+- If, after checking a few genuinely relevant sources (not just one), what's being asked for
+  simply does not exist or cannot be found, use {{"type": "fail", "reason": "..."}} instead of
+  fabricating an answer or continuing to search indefinitely — say specifically what you
+  checked and why it came up empty.
 """
 
 
@@ -121,7 +190,7 @@ def _image_to_data_url(file_storage=None, b64=None) -> str:
     raise ValueError("no image provided (send 'image' file or 'image_b64' field)")
 
 
-def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", findings=None, spec=None, stream: bool = False):
+def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "", findings=None, spec=None, mode: str = "normal", stream: bool = False):
     user_text = f"Task: {task}\n\nAccessibility tree:\n{tree}"
     if spec:
         user_text = "Task spec:\n" + json.dumps(spec, indent=2) + "\n\n" + user_text
@@ -133,10 +202,13 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "
         user_text += f"\n\nOperator hint: {hint}"
     user_text += "\n\nDecide the next action(s)."
 
+    research = mode == "research"
+    system_prompt = SYSTEM_PROMPT + RESEARCH_MODE_ADDENDUM if research else SYSTEM_PROMPT
+
     return client.chat.send(
         model=MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
@@ -145,9 +217,15 @@ def _ask_openrouter(image_url: str, tree: str, task: str, history, hint: str = "
                 ],
             },
         ],
-        max_tokens=800,
+        max_tokens=2200 if research else 800,
         temperature=0,
         response_format={"type": "json_object"},
+        # Reasoning-capable models bill "thinking" tokens out of the same max_tokens
+        # budget, which can silently eat the whole response and leave nothing for the
+        # actual JSON (empty/truncated output, or the provider erroring out entirely).
+        # This is a mechanical action-selection task — keep reasoning light so the
+        # budget goes to the answer.
+        reasoning_effort="low",
         stream=stream,
     )
 
@@ -259,6 +337,7 @@ def ask():
             hint = body.get("hint", "")
             findings = body.get("findings", [])
             spec = body.get("spec")
+            mode = body.get("mode", "normal")
         else:
             image_url = _image_to_data_url(
                 file_storage=request.files.get("image"),
@@ -270,12 +349,15 @@ def ask():
             hint = request.form.get("hint", "")
             findings = json.loads(request.form.get("findings", "[]"))
             spec = json.loads(request.form.get("spec", "null"))
+            mode = request.form.get("mode", "normal")
 
         if not tree and not image_url:
             return jsonify({"error": "tree or image required"}), 400
 
-        actions, note, answer = _ask_openrouter(image_url, tree, task, history, hint, findings, spec)
-        return jsonify({"actions": actions, "note": note, "answer": answer})
+        response = _ask_openrouter(image_url, tree, task, history, hint, findings, spec, mode)
+        raw = response.choices[0].message.content or ""
+        actions, note, answer = _parse_response(raw)
+        return jsonify({"actions": actions, "note": note, "answer": answer, "raw": raw})
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:  # openrouter SDK raises its own error types
@@ -293,13 +375,14 @@ def ask_stream():
         hint = body.get("hint", "")
         findings = body.get("findings", [])
         spec = body.get("spec")
+        mode = body.get("mode", "normal")
     except (ValueError, KeyError) as e:
         return jsonify({"error": str(e)}), 400
 
     def generate():
         accumulated = []
         try:
-            stream = _ask_openrouter(image_url, tree, task, history, hint, findings, spec, stream=True)
+            stream = _ask_openrouter(image_url, tree, task, history, hint, findings, spec, mode, stream=True)
             for chunk in stream:
                 text = _extract_text(chunk)
                 if text:
@@ -354,14 +437,15 @@ def compile_task():
         if existing:
             user_content = f"Current spec:\n{json.dumps(existing, indent=2)}\n\nUser follow-up: {text}\n\nReturn the updated spec."
         response = client.chat.send(
-            model=MODEL,
+            model=COMPILATION_MODEL,
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_content},
             ],
-            max_tokens=400,
+            max_tokens=900,
             temperature=0,
             response_format={"type": "json_object"},
+            reasoning_effort="low",
         )
         raw = response.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
@@ -375,7 +459,7 @@ def compile_task():
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True, "model": MODEL})
+    return jsonify({"ok": True, "model": MODEL, "compilation_model": COMPILATION_MODEL})
 
 
 if __name__ == "__main__":
