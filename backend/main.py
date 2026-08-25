@@ -161,6 +161,10 @@ for everything (all query params below are illustrative; URL-encode the real que
   concept definitions.
 Use judgment for anything not listed above — the point is to go to the site suited to the
 question, not to reflexively search Google for everything.
+- If a site above blocks you (CAPTCHA/verification page — Google Scholar does this
+  aggressively) or turns up no usable results, don't get stuck retrying it: fall back to a
+  plain Google search (https://www.google.com/search?q=<query>) for the same query and
+  continue from there.
 - A search results page is a launching point, not a source: read the snippets, then open_tab
   the actual pages that look relevant and read THOSE. Do not treat the search results page
   itself as something you've "read" for the purposes of answering.

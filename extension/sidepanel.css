@@ -561,11 +561,13 @@ details.step[open] > summary::before {
   color: var(--dim);
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .step-note {
   margin: 8px 0;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .step-note::before {
@@ -590,6 +592,7 @@ details.step[open] > summary::before {
 .step-actions li {
   padding: 2px 0;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 
 .step-actions li::before {

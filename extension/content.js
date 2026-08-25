@@ -56,6 +56,19 @@ if (!window.__cleoContentScriptLoaded) {
 
   let elementRefs = new Map();
 
+  // Modern sites (Reddit's shreddit-*, YouTube's ytd-*, ...) render their actual
+  // content inside open shadow roots, which plain querySelectorAll never sees —
+  // the tree would come back missing post titles/links entirely. Recurse into
+  // every open shadow root too. Closed shadow roots stay invisible; nothing to
+  // do about that from a content script.
+  function queryAllDeep(selector, root = document) {
+    const found = [...root.querySelectorAll(selector)];
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) found.push(...queryAllDeep(selector, host.shadowRoot));
+    }
+    return found;
+  }
+
   function normalize(value, maxLength = 240) {
     return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, maxLength);
   }
@@ -255,7 +268,7 @@ if (!window.__cleoContentScriptLoaded) {
     }
 
     // Include visible input controls without ever reading their values.
-    for (const element of document.querySelectorAll("input, textarea, select")) {
+    for (const element of queryAllDeep("input, textarea, select")) {
       if (!isVisible(element)) continue;
       const metadata = normalize(
         `${element.getAttribute("aria-label") || ""} ${element.getAttribute("name") || ""} ${element.getAttribute("autocomplete") || ""}`,
@@ -272,7 +285,7 @@ if (!window.__cleoContentScriptLoaded) {
 
     // Whole location widgets (Amazon "Deliver to CITY 123456"). Matched by id,
     // class, or aria-label so split text nodes are covered by one mask.
-    for (const element of document.querySelectorAll(
+    for (const element of queryAllDeep(
       '[id*=location i],[id*=deliver i],[id*=glow i],[class*=glow i],[class*=deliver i],[aria-label*=deliver i],[aria-label*=location i]'
     )) {
       if (!isVisible(element)) continue;
@@ -306,9 +319,9 @@ if (!window.__cleoContentScriptLoaded) {
 
   function collectElements(privacyRegions = []) {
     const all = new Set([
-      ...document.querySelectorAll(INTERACTIVE_SELECTOR),
-      ...document.querySelectorAll(LANDMARK_SELECTOR),
-      ...document.querySelectorAll(IMAGE_SELECTOR),
+      ...queryAllDeep(INTERACTIVE_SELECTOR),
+      ...queryAllDeep(LANDMARK_SELECTOR),
+      ...queryAllDeep(IMAGE_SELECTOR),
     ]);
     const elements = [];
 
@@ -379,7 +392,7 @@ if (!window.__cleoContentScriptLoaded) {
       regions: [],
     };
 
-    const candidates = document.querySelectorAll("div, nav, aside, ul, ol, section, main");
+    const candidates = queryAllDeep("div, nav, aside, ul, ol, section, main");
     for (const element of candidates) {
       if (info.regions.length >= 5) break;
       if (!isVisible(element)) continue;
