@@ -126,6 +126,71 @@ function status(chatId, message) {
 
 // ---------- debugger helpers ----------
 
+// ---------- tab pool (each chat owns the tabs it created) ----------
+
+// Handle open_tab / switch_tab / close_tab. These mutate the chat's tab pool
+// and always change what the next observation step will see, so the caller
+// continues the loop afterwards instead of executing more actions.
+async function handleTabPoolAction(state, action) {
+  if (action.type === "open_tab") {
+    if (!action.url) throw new Error("open_tab requires url");
+    let url = action.url;
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    const tab = await chrome.tabs.create({ url, active: false });
+    await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+    await attachDebugger(tab.id);
+    const ref = `t${state.tabs.length + 1}`;
+    state.tabs.push(tab.id);
+    state.currentTab = tab.id;
+    state.tabId = tab.id;
+    await waitForTabLoad(tab.id);
+    return `opened ${ref} (tab ${tab.id}) in background: ${url}`;
+  }
+
+  if (action.type === "switch_tab") {
+    const wanted = String(action.tab ?? action.index ?? "").replace(/^t/i, "");
+    const index = parseInt(wanted, 10) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= state.tabs.length) {
+      throw new Error(
+        `switch_tab: unknown tab "${action.tab ?? wanted}". Pool: ${state.tabs.map((t, i) => `t${i + 1}`).join(", ")}`
+      );
+    }
+    const target = state.tabs[index];
+    if (target !== state.tabId) {
+      await attachDebugger(target);
+      chrome.debugger.detach({ tabId: state.tabId }).catch(() => {});
+      state.tabId = target;
+      state.currentTab = target;
+      await waitForTabLoad(target);
+    }
+    return `switched to ${ref(index)}`;
+  }
+
+  if (action.type === "close_tab") {
+    const wanted = action.tab ? String(action.tab).replace(/^t/i, "") : null;
+    const index = wanted ? parseInt(wanted, 10) - 1 : state.tabs.indexOf(state.currentTab);
+    if (!Number.isInteger(index) || index < 0 || index >= state.tabs.length) {
+      throw new Error(`close_tab: unknown tab`);
+    }
+    const closing = state.tabs[index];
+    state.tabs.splice(index, 1);
+    chrome.debugger.detach({ tabId: closing }).catch(() => {});
+    await chrome.tabs.remove(closing).catch(() => {});
+    if (state.currentTab === closing) {
+      state.currentTab = state.tabs[0] ?? null;
+      state.tabId = state.currentTab;
+      if (state.tabId) await attachDebugger(state.tabId);
+    }
+    return `closed tab ${closing}`;
+  }
+
+  throw new Error(`unknown tab pool action: ${action.type}`);
+}
+
+function ref(index) {
+  return `t${index + 1}`;
+}
+
 async function attachDebugger(tabId) {
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
@@ -268,7 +333,8 @@ async function startTask(task, requestedChatId) {
     history: targetChat.taskHistory || [],
     findings: targetChat.findings || [],
     spec: targetChat.spec || null,
-    spec: targetChat.spec || null,
+    tabs: [tab.id],
+    currentTab: tab.id,
     lastTreeHash: null,
     stallCount: 0,
     scrollRun: 0,
