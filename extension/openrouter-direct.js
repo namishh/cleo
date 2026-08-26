@@ -27,6 +27,7 @@ const ACTION_SPACE = {
   back: "Go back to the previous page (e.g. return from a detail page to the results list).",
   forward: "Go forward one page.",
   remember: "Store one fact you read on the current page for the final summary. Requires fact. Use repeatedly while researching.",
+  exa_search: "Search the live web via the Exa API and get back real page titles/URLs/highlights directly in the result — use this INSTEAD of navigating to a search engine and scrolling through results. Also the best option for academic/scholarly queries. Requires query.",
   download: "Download a file directly without clicking any button. Requires id (element from the tree with src/href) or url. Optional filename.",
   read_text: "Read the page's visible text exactly (PII masked). Optional id to read a single element. Use this for reading numbers/values instead of relying on the screenshot.",
   wait: "Wait N milliseconds for the page to settle. Requires ms.",
@@ -54,6 +55,8 @@ Rules:
 - Chain multiple actions in one response only when you don't need to see the intermediate result first (e.g. type + key Enter). Otherwise return one action and wait for the next observation.
 - For exact values (totals, percentages, prices) call read_text and compute from that text — the screenshot may misread numbers.
 - For downloading images/audio/files, use download with the element id (images expose src, links expose href) rather than hunting for a UI download button.
+- Whenever the task needs information not already on the current page — a fact, a site to go to, a product, "search for X" — use exa_search first instead of navigate/open_tab to a search engine and scrolling results. This applies in normal mode too, not just research mode. Only skip it for a URL you already know exactly (e.g. a specific site the user named) or a site-specific search (e.g. searching inside a retailer you're already on).
+- exa_search is a discovery step, not an answer source — never copy/paraphrase its snippets straight into your answer. Judge which result(s) actually look worth reading, open_tab them, then read_text/remember what's really on the page. If nothing returned looks useful, call exa_search again with a narrower or different query rather than answering off thin snippets.
 - Scroll may omit x/y; the extension defaults to the viewport center.
 - NEVER nest action objects like {"click": {"id": "e62"}}. Always use the flat {"type": "..."} form.
 - Example (by element id): {"actions": [{"type": "click", "id": "e62"}], "note": "Clicking the image"}
@@ -90,14 +93,14 @@ actually read there this task. On any step where you have not yet opened and rea
 one real source in this chat's tab pool, you MUST return actions — not an answer, and not an
 empty actions list.
 
-Where to look — pick the site that fits the question, don't default to a plain web search
+Where to look — pick the option that fits the question, don't default to a plain web search
 for everything (all query params below are illustrative; URL-encode the real query):
-- No clearly better option / general or current-events question:
-  https://www.google.com/search?q=<query>. Treat Google's own AI-generated summary box as
-  unreliable and NOT a source — scroll past it and open the actual result links beneath it.
-- Academic, technical, or research-paper topics (papers, theorems, algorithms, syllabus/exam
-  topics like GATE): https://arxiv.org/abs/... or arxiv.org search, and Google Scholar at
-  https://scholar.google.com/scholar?q=<query>.
+- No clearly better option / general or current-events question / academic, technical, or
+  research-paper topics (papers, theorems, algorithms, syllabus/exam topics like GATE): use
+  exa_search with the query. It returns real page titles/URLs/highlights directly — no need
+  to open a search tab and scroll past ads or an AI summary box, and it sidesteps Google
+  Scholar's aggressive CAPTCHA walls. If a highlighted result looks worth reading in full,
+  open_tab its URL.
 - Videos, tutorials, walkthroughs: https://www.youtube.com/results?search_query=<query>.
 - Images, mood boards, visual/design references: https://unsplash.com/s/photos/<query> and
   https://www.pinterest.com/search/pins/?q=<query>.
@@ -111,12 +114,12 @@ for everything (all query params below are illustrative; URL-encode the real que
   concept definitions.
 Use judgment for anything not listed above — the point is to go to the site suited to the
 question, not to reflexively search Google for everything.
-- If a site above blocks you (CAPTCHA/verification page — Google Scholar does this
-  aggressively) or turns up no usable results, don't get stuck retrying it: fall back to a
-  plain Google search (https://www.google.com/search?q=<query>) for the same query and
+- If exa_search comes back unavailable/failed (its result text says so) or a site above
+  blocks you (CAPTCHA/verification page), don't get stuck retrying it: fall back to a plain
+  Google search (open_tab https://www.google.com/search?q=<query>) for the same query and
   continue from there.
-- A search results page is a launching point, not a source: read the snippets, then open_tab
-  the actual pages that look relevant and read THOSE. Do not treat the search results page
+- exa_search's highlights are a launching point, not a source: read them, then open_tab
+  the actual pages that look relevant and read THOSE. Do not treat exa_search's result text
   itself as something you've "read" for the purposes of answering.
 - Use 1 tab for a narrow, single-answer question; use several for anything that benefits from
   comparing options or corroborating a claim (aim for 2-3+ independent sources when

@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   authToken: "9876543210",
   directMode: false,
   openrouterApiKey: "",
+  exaApiKey: "",
   openrouterModel: "google/gemini-2.0-flash-001",
   displayName: "cleo",
   avatarGradient: ["#2980B9", "#6dd5fa"],
@@ -480,12 +481,17 @@ async function runTaskLoop(chatId) {
       state.lastTreeHash = treeHash;
     }
     let hint = "";
-    if (state.mode === "research" && state.findings.length === 0 && (state.researchBlocked || 0) >= 1) {
-      hint =
-        "You just tried to answer/done without reading any real source — that was blocked. This " +
-        "is research mode: you must open_tab (or navigate) to a real page relevant to the " +
-        "question, then read_text and remember at least one fact from it, before you're allowed " +
-        "to answer. Return actions now (typically open_tab), not an answer.";
+    const needsGrounding = state.mode === "research" || state.usedExaSearch;
+    if (needsGrounding && state.findings.length === 0 && (state.groundingBlocked || 0) >= 1) {
+      hint = state.usedExaSearch && state.mode !== "research"
+        ? "You just tried to answer/done using only exa_search's snippets — that was blocked. " +
+          "exa_search is for discovery, not a source: open_tab the most relevant result (or call " +
+          "exa_search again with a better query), then read_text and remember at least one fact " +
+          "from a page you actually opened, before you're allowed to answer."
+        : "You just tried to answer/done without reading any real source — that was blocked. This " +
+          "is research mode: you must open_tab (or navigate) to a real page relevant to the " +
+          "question, then read_text and remember at least one fact from it, before you're allowed " +
+          "to answer. Return actions now (typically open_tab), not an answer.";
       log(chatId, `Step ${step}: nudging model to actually research before answering`);
     } else if (state.stallCount >= 2) {
       hint =
@@ -686,23 +692,54 @@ async function runTaskLoop(chatId) {
       emit(chatId, "step-actions", { step, actions });
     }
 
-    // Research mode must not answer straight from the model's own knowledge — the prompt
-    // asks for this, but LLM compliance with a buried instruction is unreliable, so enforce
-    // it deterministically too: block a would-be terminal answer/done until at least one
-    // remember has actually happened (i.e. a real page was read), up to a few attempts so a
-    // truly stubborn model can't deadlock the chat forever.
+    // exa_search never touches the browser either: it replaces "open_tab a search
+    // engine + scroll" with one API call, so run it here and feed the result text
+    // back into this step's history for the next model turn.
+    if (actions.some((action) => action.type === "exa_search")) {
+      const searchActions = actions.filter((action) => action.type === "exa_search");
+      const searchResults = [];
+      for (const action of searchActions) {
+        if (!action.query) {
+          searchResults.push({ action, ok: true, detail: "exa_search requires a query" });
+          continue;
+        }
+        const detail = await runExaSearch(action.query, state.mode, state.settings);
+        searchResults.push({ action, ok: true, detail });
+        // exa_search only returns snippets to skim, not a source read — until the
+        // model opens one of the results and remembers a fact from it, it must not
+        // answer from these snippets alone (see the grounding gate below).
+        state.usedExaSearch = true;
+        log(chatId, `Step ${step}: exa_search "${action.query}"`);
+      }
+      const historyEntry = state.history[state.history.length - 1];
+      historyEntry.results = (historyEntry.results || []).concat(searchResults);
+      actions = actions.filter((action) => action.type !== "exa_search");
+      if (actions.length === 0) {
+        state.emptyRun = 0;
+        await sleep(200);
+        continue;
+      }
+      emit(chatId, "step-actions", { step, actions });
+    }
+
+    // Research mode — and any task that used exa_search — must not answer straight from
+    // the model's own knowledge or from exa_search's snippets alone; the prompt asks for
+    // this, but LLM compliance with a buried instruction is unreliable, so enforce it
+    // deterministically too: block a would-be terminal answer/done until at least one
+    // remember has actually happened (i.e. a real page was opened and read), up to a few
+    // attempts so a truly stubborn model can't deadlock the chat forever.
     const wantsToTerminate = !!decision.answer || actions.some((action) => action.type === "done");
-    if (state.mode === "research" && state.findings.length === 0 && wantsToTerminate) {
-      state.researchBlocked = (state.researchBlocked || 0) + 1;
-      if (state.researchBlocked <= 3) {
+    if (needsGrounding && state.findings.length === 0 && wantsToTerminate) {
+      state.groundingBlocked = (state.groundingBlocked || 0) + 1;
+      if (state.groundingBlocked <= 3) {
         log(
           chatId,
-          `Step ${step}: blocked an answer with no sources read yet (research mode, attempt ${state.researchBlocked}/3)`
+          `Step ${step}: blocked an answer with no sources read yet (attempt ${state.groundingBlocked}/3)`
         );
         await sleep(500);
         continue;
       }
-      log(chatId, `Step ${step}: allowing an unresearched answer after ${state.researchBlocked} blocked attempts`);
+      log(chatId, `Step ${step}: allowing an ungrounded answer after ${state.groundingBlocked} blocked attempts`);
     }
 
     if (decision.answer) {
@@ -907,6 +944,69 @@ async function askBackendStream(payload, onDelta, authToken) {
     }
   }
   return result;
+}
+
+// exa_search replaces "navigate to a search engine, then scroll the results" with
+// one Exa API call. Normal mode uses type "auto"; research mode uses "deep" since
+// it's digging for corroborating/academic sources rather than a single quick fact.
+// Falls back to a plain Google search (as an instruction the model can act on)
+// whenever Exa isn't usable: direct mode with no key configured, or any request
+// error (bad key, network, rate limit, etc).
+async function runExaSearch(query, mode, settings) {
+  const deep = mode === "research";
+  if (settings.directMode && !settings.exaApiKey) {
+    return `Exa search unavailable (no Exa API key set in settings). Fall back to a traditional search: open_tab https://www.google.com/search?q=${encodeURIComponent(query)}.`;
+  }
+  try {
+    const data = settings.directMode
+      ? await exaSearchDirect(query, deep, settings.exaApiKey)
+      : await exaSearchViaBackend(query, deep, settings.authToken);
+    return formatExaResults(query, data);
+  } catch (error) {
+    return `Exa search failed (${error.message}). Fall back to a traditional search: open_tab https://www.google.com/search?q=${encodeURIComponent(query)}.`;
+  }
+}
+
+async function exaSearchDirect(query, deep, apiKey) {
+  const response = await fetch("https://api.exa.ai/search", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": apiKey },
+    body: JSON.stringify({
+      query,
+      numResults: 10,
+      type: deep ? "deep" : "auto",
+      contents: { highlights: true },
+    }),
+  });
+  if (!response.ok) throw new Error(`Exa API returned HTTP ${response.status}`);
+  return response.json();
+}
+
+async function exaSearchViaBackend(query, deep, authToken) {
+  const response = await fetch(`${BACKEND_BASE}/exa_search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${authToken}` },
+    body: JSON.stringify({ query, mode: deep ? "research" : "normal" }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error || `Backend returned HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+function formatExaResults(query, data) {
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (!results.length) return `Exa search for "${query}" returned no results.`;
+  return results
+    .slice(0, 10)
+    .map((result, i) => {
+      const highlights = Array.isArray(result.highlights) && result.highlights.length
+        ? result.highlights.join(" … ")
+        : result.text || "";
+      return `${i + 1}. ${result.title || result.url}\n${result.url}\n${highlights}`.trim();
+    })
+    .join("\n\n");
 }
 
 async function captureTabWithRetry(tabId, attempts = 3) {

@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS = {
   authToken: "9876543210",
   directMode: false,
   openrouterApiKey: "",
+  exaApiKey: "",
   openrouterModel: "google/gemini-2.0-flash-001",
   displayName: "cleo",
   avatarGradient: ["#2980B9", "#6dd5fa"],
@@ -164,6 +165,8 @@ function formatAction(action) {
       return `WAIT ${action.ms ?? 0}ms`;
     case "remember":
       return `REMEMBER "${action.fact ?? ""}"`;
+    case "exa_search":
+      return `EXA SEARCH "${action.query ?? ""}"`;
     case "done":
       return "DONE";
     case "fail":
@@ -297,6 +300,7 @@ const directModeInput = document.getElementById("settings-direct-mode");
 const directFieldsEl = document.getElementById("settings-direct-fields");
 const openrouterKeyInput = document.getElementById("settings-openrouter-key");
 const openrouterModelInput = document.getElementById("settings-openrouter-model");
+const exaKeyInput = document.getElementById("settings-exa-key");
 const displayNameInput = document.getElementById("settings-display-name");
 const avatarColor1Input = document.getElementById("settings-avatar-color1");
 const avatarColor2Input = document.getElementById("settings-avatar-color2");
@@ -316,6 +320,7 @@ function fillSettingsForm() {
   directModeInput.checked = currentSettings.directMode;
   openrouterKeyInput.value = currentSettings.openrouterApiKey;
   openrouterModelInput.value = currentSettings.openrouterModel;
+  exaKeyInput.value = currentSettings.exaApiKey;
   displayNameInput.value = currentSettings.displayName;
   avatarColor1Input.value = currentSettings.avatarGradient[0] || "#2980B9";
   avatarColor2Input.value = currentSettings.avatarGradient[1] || "#6dd5fa";
@@ -342,6 +347,7 @@ document.getElementById("settings-save-btn").addEventListener("click", async () 
     authToken: authTokenInput.value.trim() || DEFAULT_SETTINGS.authToken,
     directMode: directModeInput.checked,
     openrouterApiKey: openrouterKeyInput.value.trim(),
+    exaApiKey: exaKeyInput.value.trim(),
     openrouterModel: openrouterModelInput.value.trim() || DEFAULT_SETTINGS.openrouterModel,
     displayName: displayNameInput.value.trim() || DEFAULT_SETTINGS.displayName,
     avatarGradient: [avatarColor1Input.value, avatarColor2Input.value],

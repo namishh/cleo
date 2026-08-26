@@ -1,6 +1,6 @@
 # Cleo
 
-An AI browser agent that lives in a Chrome side panel. It sees the page through redacted screenshots, reasons with a vision LLM, and drives the browser for you — while PII (names, emails, phones, addresses, IDs) is detected and black-boxed **locally** before anything is sent anywhere. It can also run a dedicated **research mode** that opens multiple tabs, searches real sites instead of answering from memory, and reports back with a sourced, detailed answer.
+An AI browser agent that lives in a Chrome side panel. It sees the page through redacted screenshots, reasons with a vision LLM, and drives the browser for you — while PII (names, emails, phones, addresses, IDs) is detected and black-boxed **locally** before anything is sent anywhere. It can also run a dedicated **research mode** that opens multiple tabs, searches real sites instead of answering from memory, and reports back with a sourced, detailed answer. Web search itself runs through the **Exa search API** (`exa_search`) by default instead of navigating to a search engine tab and scrolling — real page highlights come back in one call, and it's the go-to for academic/scholarly queries too.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ flowchart TB
         UI_Stream["Chat stream<br/>reasoning accordion · step screenshots<br/>note/action lines · markdown answers<br/>'displayName:' prefix · sources list"]
         UI_Input["Input bar<br/>task field · research button · send/stop"]
         UI_Chats["Chats drawer<br/>chat list · spinners · new/delete/switch"]
-        UI_Settings["Settings drawer<br/>auth token · direct-mode toggle<br/>OpenRouter key + model<br/>display name · avatar gradient"]
+        UI_Settings["Settings drawer<br/>auth token · direct-mode toggle<br/>OpenRouter key + model · Exa key (optional)<br/>display name · avatar gradient"]
         UI_Scroll["stick-to-bottom scroll tracker"]
     end
 
@@ -25,12 +25,13 @@ flowchart TB
         W_ChatStore["Chat store<br/>load/save/normalize · migration<br/>per-chat: entries, history, findings, spec"]
         W_Loop["Task loop — one per chat<br/>runTaskLoop() · MAX_STEPS = 50"]
         W_TabPool["Tab-pool manager<br/>open_tab/switch_tab/close_tab<br/>foreground-activation fix · MAX 6 tabs<br/>new-tab adoption (target=_blank)"]
-        W_AntiStall["Anti-stall guards<br/>tree-hash stall · scroll-run<br/>pool-run · empty-run<br/>research premature-answer gate"]
+        W_AntiStall["Anti-stall guards<br/>tree-hash stall · scroll-run<br/>pool-run · empty-run<br/>ungrounded-answer gate (research<br/>mode or exa_search used)"]
         W_Debug["Debugger helpers<br/>attach/detach/force-reattach<br/>restricted-URL redirect (chrome://, newtab)"]
         W_Capture["Screenshot capture<br/>surface capture then renderer fallback<br/>retry x3"]
         W_Tree["Compact a11y tree fetch<br/>content-script messaging<br/>re-inject on 'no receiver' only"]
         W_Compile["Task compiler call<br/>spec cache · re-compile on follow-ups"]
         W_Ask["askModel() router"]
+        W_ExaSearch["exa_search handler<br/>runExaSearch() · type=auto (normal)<br/>/ deep (research) · no-tab, no-CDP"]
         W_Resume["Resume-after-restart<br/>resumeInterruptedTasks()"]
         W_Keepalive["Keepalive ping<br/>MV3 30s idle workaround"]
         W_Notify["Desktop notification<br/>on background-chat completion"]
@@ -69,15 +70,18 @@ flowchart TB
             B_Compile["/compile<br/>TASK_COMPILER_PROMPT to spec JSON<br/>COMPILATION_MODEL · reasoning_effort=low"]
             B_Ask["/ask_stream (SSE)<br/>SYSTEM_PROMPT +RESEARCH_MODE_ADDENDUM<br/>MODEL · reasoning_effort=low"]
             B_Parse["Response parsing<br/>_parse_response/_normalize_action<br/>_validate_actions — tolerant JSON"]
+            B_Exa["/exa_search<br/>proxies to Exa API with<br/>server's own EXA_API_KEY"]
         end
         subgraph Direct["DIRECT MODE — openrouter-direct.js"]
             direction TB
             D_Prompts["Ported prompts<br/>ACTION_SPACE · SYSTEM_PROMPT<br/>RESEARCH_MODE_ADDENDUM<br/>TASK_COMPILER_PROMPT"]
             D_Calls["directCompile() · directAskStream()<br/>user's own OpenRouter key, no server"]
+            D_Exa["direct Exa call<br/>user's own Exa key —<br/>else falls back to traditional search"]
         end
     end
 
     OpenRouter["OPENROUTER<br/>vision LLM — MODEL / COMPILATION_MODEL"]
+    Exa["EXA SEARCH API<br/>exa.ai/search — semantic web search"]
 
     UI_Input -->|startTask / stopTask| W_Router
     UI_Chats -->|listChats / openChat / deleteChat| W_Router
@@ -92,6 +96,7 @@ flowchart TB
     W_Loop --> W_AntiStall
     W_Loop --> W_Compile
     W_Loop --> W_Ask
+    W_Loop --> W_ExaSearch
     W_Resume -.->|on SW restart| W_Loop
     W_Loop -.-> W_Keepalive
     W_Loop -.-> W_Notify
@@ -121,6 +126,12 @@ flowchart TB
     Direct --> OpenRouter
     B_Compile --> B_Parse
     B_Ask --> B_Parse
+
+    W_ExaSearch -.->|no direct mode| B_Exa
+    W_ExaSearch -.->|direct mode| D_Exa
+    B_Exa --> Exa
+    D_Exa --> Exa
+    Exa -.->|highlights or error| W_ExaSearch
 
     W_Loop -->|actions array| A_Exec
     A_Exec -->|results| W_Loop
@@ -158,8 +169,8 @@ flowchart TD
     PoolCheck -->|yes| HintPool["hint: stop juggling tabs,<br/>act or answer"]
     PoolCheck -->|no| EmptyCheck{"prior step: 0 actions,<br/>no answer/done/fail?"}
     EmptyCheck -->|yes| HintEmpty["hint: must return an action<br/>or a terminal answer/fail"]
-    EmptyCheck -->|no| ResearchCheck{"research mode, 0 sources<br/>read, blocked before?"}
-    ResearchCheck -->|yes| HintResearch["hint: open_tab and read a real<br/>source before answering"]
+    EmptyCheck -->|no| ResearchCheck{"research mode OR exa_search used,<br/>0 sources read, blocked before?"}
+    ResearchCheck -->|yes| HintResearch["hint: open_tab and read a real<br/>source (not just exa snippets)<br/>before answering"]
     ResearchCheck -->|no| Redact
 
     HintStall --> Redact
@@ -186,11 +197,16 @@ flowchart TD
 
     Remember{"actions include<br/>remember?"}
     Remember -->|yes, only| StoreFact["Store fact plus source URL/title<br/>for research citations"] --> LoopTop
-    Remember -->|yes plus more| StoreFactMixed["Store fact,<br/>continue with rest"] --> ResearchGate
-    Remember -->|no| ResearchGate
+    Remember -->|yes plus more| StoreFactMixed["Store fact,<br/>continue with rest"] --> ExaCheck
+    Remember -->|no| ExaCheck
 
-    ResearchGate{"research mode, 0 sources read,<br/>tries to answer/done?"}
-    ResearchGate -->|yes, 3 or fewer attempts| Block["Block — loop back,<br/>force real research"] --> LoopTop
+    ExaCheck{"actions include<br/>exa_search?"}
+    ExaCheck -->|yes, only| RunExa["Call Exa API — backend proxy or direct,<br/>type=auto (normal) / deep (research);<br/>no key or request error: fallback text<br/>telling the model to open_tab a Google search"] --> LoopTop
+    ExaCheck -->|yes plus more| RunExaMixed["Call Exa API,<br/>continue with rest"] --> ResearchGate
+    ExaCheck -->|no| ResearchGate
+
+    ResearchGate{"research mode OR exa_search used,<br/>0 sources read, tries to answer/done?"}
+    ResearchGate -->|yes, 3 or fewer attempts| Block["Block — loop back,<br/>force open_tab + remember<br/>(not exa_search snippets alone)"] --> LoopTop
     ResearchGate -->|no, or attempts exhausted| Terminal
 
     Terminal{"answer? done? fail?"}
@@ -250,10 +266,13 @@ flowchart LR
     Ext["Extension<br/>service worker"] -->|Bearer token| Auth["Flask backend<br/>auth check"]
     Auth --> Compile["/compile<br/>spec JSON"]
     Auth --> Ask["/ask_stream<br/>SSE actions"]
+    Auth --> ExaEP["/exa_search<br/>Exa API proxy"]
     Compile --> OR["OpenRouter<br/>vision LLM"]
     Ask --> OR
+    ExaEP --> ExaAPI["Exa API"]
     OR --> Parse["parse + validate<br/>JSON actions"]
     Parse --> Ext
+    ExaAPI --> Ext
 ```
 
 **Client + ONNX**
@@ -282,7 +301,8 @@ flowchart LR
 ```
 
 - **Task compiler** — an intermediate model turns vague requests into a structured spec (goal, task type, success criteria, constraints, ambiguities) once per task; follow-ups re-compile against the existing spec. It can run a stronger/pricier model than the per-step loop (`OPENROUTER_COMPILATION_MODEL`), since it runs once per task instead of once per step. The vision model checks every screen against the success criteria, which makes "done" a checkable condition instead of a feeling.
-- **Research mode** — a dedicated button that forces real browsing over answering from the model's own training knowledge: it must open and read at least one real source (Google/arxiv/Scholar/YouTube/Reddit/marketplace/Wikipedia, routed by question type) before it's allowed to answer, enforced deterministically in code, not just requested in the prompt. Ends with a detailed, source-attributed report and an automatically-compiled sources list.
+- **Research mode** — a dedicated button that forces real browsing over answering from the model's own training knowledge: it must open and read at least one real source (found via `exa_search`, or a site-specific destination like YouTube/Reddit/a marketplace/Wikipedia when that fits the question better) before it's allowed to answer, enforced deterministically in code, not just requested in the prompt. Ends with a detailed, source-attributed report and an automatically-compiled sources list.
+- **Web search (`exa_search`)** — the default way the agent looks things up, in both normal and research mode: one Exa API call returns real page titles/URLs/highlights, replacing "navigate to a search engine, then scroll the results." Normal mode uses `type: "auto"`; research mode uses `type: "deep"`. Routes through the backend's own `EXA_API_KEY` by default; in direct mode it uses the user's own Exa key from settings (optional), or falls back to a traditional `open_tab` Google search if no key is set or the Exa call errors. It's a discovery step, not a source: the same deterministic gate that guards research mode also blocks an answer/done coming right off exa_search's snippets in *any* mode, until the agent has actually `open_tab`'d a result and `remember`'d something from the page itself.
 - **Per-chat isolation** — each chat has its own state (tab, tab pool, history, findings, step counter, spec, mode); multiple chats run in parallel on different tabs.
 - **Resumable** — steps persist immediately; if the service worker is recycled, interrupted tasks auto-resume.
 - **Self-healing** — debugger re-attach, new-tab adoption, tab-foreground activation, restricted-page redirect, screenshot fallbacks, backend watchdog, offscreen retry.
@@ -297,16 +317,17 @@ A privacy-first browser automation agent. You give it a task in plain English ("
 **Quick features**
 
 - Task compiler: an intermediate model turns vague requests into a structured spec — goal, task type, success criteria, constraints, ambiguities — so "done" is checkable, not a feeling
-- Research mode: a dedicated button that opens multiple tabs across the right sites for the question (Google/arxiv/Scholar/YouTube/Reddit/marketplaces/Wikipedia), is deterministically blocked from answering until it has actually read a real source, and finishes with a detailed, sourced report
+- Research mode: a dedicated button that searches via Exa and opens tabs across the right sites for the question (YouTube/Reddit/marketplaces/Wikipedia when that fits better than a general search), is deterministically blocked from answering until it has actually read a real source, and finishes with a detailed, sourced report
+- Exa-powered web search (`exa_search`) as the default lookup in both modes — real highlights in one API call instead of opening a search tab and scrolling; falls back to a traditional Google search if no key/an error occurs
 - Chrome side-panel chat interface with streaming responses, stick-to-bottom scrolling
 - Collapsible per-message reasoning: screenshot + note + commands for every step
-- Settings panel: swap the backend for a direct OpenRouter connection with your own key, set the auth token, customize Cleo's display name and your avatar gradient
+- Settings panel: swap the backend for a direct OpenRouter connection with your own key (optionally your own Exa key too), set the auth token, customize Cleo's display name and your avatar gradient
 - Multiple chats, running in parallel, persisted locally (`unlimitedStorage`)
 - Auto-titled chats, desktop notifications on completion
 - 20+ browser actions: click, type, key combos, scroll, drag, hover, select, navigate, back/forward, download, PDF export, clipboard, read_text, scroll_into_view, remember
 - Works on background tabs (CDP input + renderer screenshots); auto-redirects off new-tab/chrome:// pages before starting
 - Research workflow: open items → remember facts (with source URL) → return to list → summarize top N
-- Anti-stall: no-progress detection, scroll-run detection, tab-pool-loop detection, empty-response detection, backend watchdog, auto-resume
+- Anti-stall: no-progress detection, scroll-run detection, tab-pool-loop detection, empty-response detection, ungrounded-answer gate (research mode or exa_search use), backend watchdog, auto-resume
 
 ## How Cleo compares
 
