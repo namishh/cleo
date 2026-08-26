@@ -60,31 +60,74 @@ function normalizeChat(chat) {
   return changed;
 }
 
-async function loadAllChats() {
-  const store = await chrome.storage.local.get(CHATS_KEY);
-  const chats = store[CHATS_KEY] || {};
-  let migrated = false;
+// Each chat lives under its own storage key (CHAT_KEY_PREFIX + id) with a
+// small separate index (id/title/updatedAt) for the list view. This keeps
+// listing/opening/deleting a chat from having to read or rewrite every other
+// chat's full entry history (screenshots included) on every click.
+const CHAT_KEY_PREFIX = "cleo_chat_";
+const CHAT_INDEX_KEY = "cleo_chat_index";
 
+async function loadChatIndex() {
+  const store = await chrome.storage.local.get(CHAT_INDEX_KEY);
+  return store[CHAT_INDEX_KEY] || {};
+}
+
+async function saveChatIndexEntry(chat) {
+  const index = await loadChatIndex();
+  index[chat.id] = { id: chat.id, title: chat.title, updatedAt: chat.updatedAt };
+  await chrome.storage.local.set({ [CHAT_INDEX_KEY]: index });
+}
+
+// One-time migration from the old single-blob format (all chats under
+// CHATS_KEY) to per-chat keys, plus legacy per-chat cleanup.
+async function migrateChatStore() {
+  const store = await chrome.storage.local.get(CHATS_KEY);
+  const chats = store[CHATS_KEY];
+  if (!chats) return;
+
+  const index = await loadChatIndex();
+  const toWrite = {};
   for (const key of Object.keys(chats)) {
     const chat = chats[key];
     if (key === "undefined" || !chat?.id) {
-      delete chats[key];
-      migrated = true;
       if (chat && typeof chat === "object") {
         chat.id = `chat_${chat.createdAt || Date.now()}_migrated`;
-        chats[chat.id] = chat;
+      } else {
+        continue;
       }
     }
-    if (normalizeChat(chat)) migrated = true;
+    normalizeChat(chat);
+    toWrite[CHAT_KEY_PREFIX + chat.id] = chat;
+    index[chat.id] = { id: chat.id, title: chat.title, updatedAt: chat.updatedAt };
   }
-  if (migrated) await chrome.storage.local.set({ [CHATS_KEY]: chats });
+  toWrite[CHAT_INDEX_KEY] = index;
+  await chrome.storage.local.set(toWrite);
+  await chrome.storage.local.remove(CHATS_KEY);
+}
+
+// Only needed for the startup resume scan, which has to inspect every
+// chat's `running` flag. Rare (once per extension restart), so a full read
+// is fine — everyday chat switching goes through loadChat/saveChat instead.
+async function loadAllChats() {
+  await migrateChatStore();
+  const index = await loadChatIndex();
+  const keys = Object.keys(index).map((id) => CHAT_KEY_PREFIX + id);
+  const store = keys.length ? await chrome.storage.local.get(keys) : {};
+  const chats = {};
+  for (const id of Object.keys(index)) {
+    const chat = store[CHAT_KEY_PREFIX + id];
+    if (!chat) continue;
+    normalizeChat(chat);
+    chats[id] = chat;
+  }
   return chats;
 }
 
 async function loadChat(id) {
   if (!id || id === "undefined") return null;
-  const chats = await loadAllChats();
-  const chat = chats[id];
+  await migrateChatStore();
+  const store = await chrome.storage.local.get(CHAT_KEY_PREFIX + id);
+  const chat = store[CHAT_KEY_PREFIX + id];
   if (!chat) return null;
   normalizeChat(chat);
   return chat;
@@ -93,9 +136,15 @@ async function loadChat(id) {
 async function saveChat(chat) {
   if (!chat?.id) throw new Error("cannot save chat without an id");
   chat.updatedAt = Date.now();
-  const chats = await loadAllChats();
-  chats[chat.id] = chat;
-  await chrome.storage.local.set({ [CHATS_KEY]: chats });
+  await chrome.storage.local.set({ [CHAT_KEY_PREFIX + chat.id]: chat });
+  await saveChatIndexEntry(chat);
+}
+
+async function deleteChatRecord(id) {
+  await chrome.storage.local.remove(CHAT_KEY_PREFIX + id);
+  const index = await loadChatIndex();
+  delete index[id];
+  await chrome.storage.local.set({ [CHAT_INDEX_KEY]: index });
 }
 
 async function setActiveChatId(id) {
@@ -114,9 +163,10 @@ async function newChatRecord() {
   const count = (store.cleo_chatCounter || 0) + 1;
   await chrome.storage.local.set({ cleo_chatCounter: count });
 
-  const chats = await loadAllChats();
+  await migrateChatStore();
+  const index = await loadChatIndex();
   let title = `New Chat #${count}`;
-  if (Object.values(chats).some((chat) => chat.title === title)) {
+  if (Object.values(index).some((chat) => chat.title === title)) {
     title = `New Chat #${count}-${Math.random().toString(36).slice(2, 5)}`;
   }
 
@@ -1276,8 +1326,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === "listChats") {
-    loadAllChats().then(async (chats) => {
-      const list = Object.values(chats)
+    (async () => {
+      await migrateChatStore();
+      const index = await loadChatIndex();
+      const list = Object.values(index)
         .map(({ id, title, updatedAt }) => ({
           id,
           title: title || "untitled",
@@ -1287,7 +1339,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         .sort((a, b) => b.updatedAt - a.updatedAt);
       const activeId = await getActiveChatId();
       sendResponse({ chats: list, activeId });
-    });
+    })();
     return true;
   }
 
@@ -1308,15 +1360,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ error: "stop the chat before deleting it" });
       return false;
     }
-    loadAllChats().then(async (chats) => {
-      delete chats[request.id];
-      await chrome.storage.local.set({ [CHATS_KEY]: chats });
+    (async () => {
+      await deleteChatRecord(request.id);
       const activeId = await getActiveChatId();
       if (activeId === request.id) {
         await chrome.storage.local.remove(ACTIVE_CHAT_KEY);
       }
       sendResponse({ ok: true });
-    });
+    })();
     return true;
   }
 
