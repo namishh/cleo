@@ -75,6 +75,188 @@ function scrollToEnd() {
 
 const CLEO_ICON = chrome.runtime.getURL("icons/cleo.png");
 
+// ---------- spinning ascii-art cleo (shown while a chat has no messages) ----------
+// Cleo is a procedural 3D blob (not a sampled image — a flat PNG has no depth to
+// spin): a sphere with organic sum-of-sines radius wobble, rotated, lit, and
+// z-buffered into a character grid each tick. Eye "expression" (blink / wide) is
+// driven by wall-clock time independently of the spin, so frames are computed live
+// rather than pre-baked.
+
+const ASCII_COLS = 50;
+const ASCII_ROWS = 26;
+const ASCII_GRADIENT = " .:-=+*#%@";
+const ASCII_LIGHT = normalize3(0.4, 0.5, 1.0);
+const ASCII_AMBIENT = 0.22;
+const ASCII_BASE_EYE_R = 0.17;
+const ASCII_THETA_STEPS = 140;
+const ASCII_PHI_STEPS = 70;
+
+function normalize3(x, y, z) {
+  const len = Math.sqrt(x * x + y * y + z * z);
+  return [x / len, y / len, z / len];
+}
+
+function cross3([ax, ay, az], [bx, by, bz]) {
+  return [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx];
+}
+
+function dot3([ax, ay, az], [bx, by, bz]) {
+  return ax * bx + ay * by + az * bz;
+}
+
+// Per-eye local basis (dir = center, right/up = tangent axes on the sphere) so an
+// eye can be rendered as an ellipse that flattens independently for a blink.
+function makeEyeBasis(dir) {
+  let right = cross3([0, 1, 0], dir);
+  if (Math.hypot(...right) < 1e-6) right = [1, 0, 0];
+  right = normalize3(...right);
+  const up = normalize3(...cross3(dir, right));
+  return { dir, up, right };
+}
+
+const ASCII_EYES = [makeEyeBasis(normalize3(-0.35, 0.12, 0.85)), makeEyeBasis(normalize3(0.35, 0.12, 0.85))];
+
+// Deterministic, wall-clock-driven "expression": open normally, blink briefly
+// every ~4s, and widen (surprised) briefly every ~9s. Pure function of time, so
+// no scheduler/state to drift or clean up.
+function getExpression(now) {
+  let blink = 1;
+  const bt = now % 4000;
+  if (bt > 3750) {
+    const p = (bt - 3750) / 250;
+    blink = p < 0.5 ? 1 - p * 2 : (p - 0.5) * 2;
+  }
+  let wide = 1;
+  const wt = now % 9000;
+  if (wt > 8500 && wt < 8900) {
+    wide = 1 + 0.35 * Math.sin(((wt - 8500) / 400) * Math.PI);
+  }
+  return { blink, wide };
+}
+
+// Organic radius wobble (sum of a few low-frequency sines over the object's own
+// theta/phi) so the blob reads as squishy, not a mathematically perfect sphere.
+function blobRadius(theta, phi) {
+  return (
+    1 +
+    0.1 * Math.sin(3 * theta + 1.3) * Math.sin(2 * phi) +
+    0.07 * Math.cos(5 * theta - 0.4) * Math.sin(phi * 3 + 0.6) +
+    0.06 * Math.sin(2 * theta + 2.1) * Math.cos(phi * 2 - 1)
+  );
+}
+
+let asciiAspect = null;
+let asciiTimer = null;
+
+// Measure the real rendered glyph cell (width/height) of the ascii-cleo class so
+// the sphere projection compensates for the actual font instead of an assumed
+// monospace aspect — a wrong guess here is exactly what made earlier versions
+// look stretched.
+function measureCharAspect() {
+  const probe = document.createElement("pre");
+  probe.className = "ascii-cleo";
+  probe.style.cssText = "position:fixed; visibility:hidden; left:-9999px; top:-9999px; margin:0;";
+  probe.textContent = "#".repeat(20) + "\n" + "#".repeat(20);
+  document.body.appendChild(probe);
+  const rect = probe.getBoundingClientRect();
+  probe.remove();
+  return rect.width > 0 && rect.height > 0 ? rect.height / 2 / (rect.width / 20) : 1.7;
+}
+
+function buildSphereFrame(angle, expression) {
+  if (asciiAspect == null) asciiAspect = measureCharAspect();
+  const cols = ASCII_COLS;
+  const rows = ASCII_ROWS;
+  const sx = cols * 0.34;
+  const sy = sx / asciiAspect;
+  const rx = ASCII_BASE_EYE_R * expression.wide;
+  const ry = ASCII_BASE_EYE_R * expression.blink * expression.wide;
+  const zbuf = new Float32Array(cols * rows).fill(-Infinity);
+  const chars = new Array(cols * rows).fill(" ");
+  const ca = Math.cos(angle);
+  const sa = Math.sin(angle);
+  for (let ti = 0; ti < ASCII_THETA_STEPS; ti++) {
+    const theta = (ti / ASCII_THETA_STEPS) * Math.PI * 2;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    for (let pi = 0; pi <= ASCII_PHI_STEPS; pi++) {
+      const phi = (pi / ASCII_PHI_STEPS) * Math.PI;
+      const sinP = Math.sin(phi);
+      const dirX = sinP * cosT;
+      const dirY = Math.cos(phi);
+      const dirZ = sinP * sinT;
+
+      let isEye = false;
+      if (ry > 1e-3) {
+        for (const eye of ASCII_EYES) {
+          if (dot3([dirX, dirY, dirZ], eye.dir) <= 0.3) continue;
+          const u = dot3([dirX, dirY, dirZ], eye.right);
+          const v = dot3([dirX, dirY, dirZ], eye.up);
+          if ((u * u) / (rx * rx) + (v * v) / (ry * ry) <= 1) {
+            isEye = true;
+            break;
+          }
+        }
+      }
+
+      const r = blobRadius(theta, phi);
+      const x = dirX * r;
+      const y = dirY * r;
+      const z = dirZ * r;
+      const xr = x * ca + z * sa;
+      const zr = -x * sa + z * ca;
+      const col = Math.round(cols / 2 + xr * sx);
+      const row = Math.round(rows / 2 - y * sy);
+      if (col < 0 || col >= cols || row < 0 || row >= rows) continue;
+      const idx = row * cols + col;
+      if (zr <= zbuf[idx]) continue;
+      zbuf[idx] = zr;
+      if (isEye) {
+        chars[idx] = " ";
+      } else {
+        const lum = Math.max(ASCII_AMBIENT, dirX * ASCII_LIGHT[0] + dirY * ASCII_LIGHT[1] + dirZ * ASCII_LIGHT[2]);
+        chars[idx] = ASCII_GRADIENT[Math.min(ASCII_GRADIENT.length - 1, Math.floor(lum * ASCII_GRADIENT.length))];
+      }
+    }
+  }
+  let out = "";
+  for (let row = 0; row < rows; row++) {
+    out += chars.slice(row * cols, (row + 1) * cols).join("") + "\n";
+  }
+  return out;
+}
+
+function stopAsciiSpin() {
+  if (asciiTimer) clearInterval(asciiTimer);
+  asciiTimer = null;
+}
+
+function showEmptyState() {
+  const wrap = document.createElement("div");
+  wrap.className = "empty ascii-empty";
+  const pre = document.createElement("pre");
+  pre.className = "ascii-cleo";
+  const hint = document.createElement("div");
+  hint.className = "empty-hint";
+  hint.textContent = "send a task to begin";
+  wrap.append(pre, hint);
+  streamEl.appendChild(wrap);
+
+  const spinPeriodMs = 6000;
+  const render = () => {
+    const now = Date.now();
+    const angle = ((now % spinPeriodMs) / spinPeriodMs) * Math.PI * 2;
+    pre.textContent = buildSphereFrame(angle, getExpression(now));
+  };
+  render();
+  asciiTimer = setInterval(render, 80);
+}
+
+function removeEmptyState() {
+  stopAsciiSpin();
+  streamEl.querySelector(".empty")?.remove();
+}
+
 function avatar(className) {
   const img = document.createElement("img");
   img.className = `avatar ${className}`;
@@ -84,6 +266,7 @@ function avatar(className) {
 }
 
 function addUserMessage(text, mode) {
+  removeEmptyState();
   const div = document.createElement("div");
   div.className = "msg user";
   const avatarEl = document.createElement("div");
@@ -277,6 +460,7 @@ function addStepActions(step, actions, results) {
 function clearStream() {
   stepElements = new Map();
   currentStepsBlock = null;
+  stopAsciiSpin();
   streamEl.textContent = "";
   stickToBottom = true;
 }
@@ -462,7 +646,10 @@ async function openChat(id) {
 
 function renderChat(chat) {
   clearStream();
-  if (!chat) return;
+  if (!chat || !chat.entries?.length) {
+    showEmptyState();
+    return;
+  }
   for (const entry of chat.entries || []) {
     if (entry.t === "user") {
       addUserMessage(entry.text, entry.mode);
@@ -511,6 +698,7 @@ document.getElementById("new-chat-btn").addEventListener("click", async () => {
   activeChatId = response.chat.id;
   running = false;
   clearStream();
+  showEmptyState();
   chatListCache.chats = [
     { id: response.chat.id, title: response.chat.title, updatedAt: Date.now(), running: false },
     ...chatListCache.chats,

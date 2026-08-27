@@ -57,6 +57,29 @@ body {
   color: var(--dim);
 }
 
+.ascii-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+}
+
+.ascii-cleo {
+  margin: 0;
+  font-size: 8px;
+  line-height: 1;
+  letter-spacing: 1px;
+  color: var(--fg);
+  white-space: pre;
+  user-select: none;
+}
+
+.empty-hint {
+  color: var(--dim);
+}
+
 /* topbar + collapsible chat sidebar */
 .topbar {
   display: flex;
