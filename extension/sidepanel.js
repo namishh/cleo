@@ -584,7 +584,10 @@ function renderChatList() {
       event.stopPropagation();
       await chrome.runtime.sendMessage({ action: "deleteChat", id: chat.id });
       chatListCache.chats = chatListCache.chats.filter((c) => c.id !== chat.id);
-      if (chat.id === activeChatId) clearStream();
+      if (chat.id === activeChatId) {
+        clearStream();
+        showEmptyState();
+      }
       renderChatList();
       refreshChatList();
     });
