@@ -3,6 +3,11 @@
 !extension/icons
 !extension/icons/*
 
+!.github/
+!.github/README.md
+!.github/*.png
+!.github/*.gif
+
 !extension/*.html
 !extension/*.css
 !extension/*.js

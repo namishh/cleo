@@ -1,10 +1,57 @@
+<p align="center">
+  <img src="cleo_top_header.png" alt="Cleo" width="100%">
+</p>
+
 # Cleo
 
-An AI browser agent that lives in a Chrome side panel. It sees the page through redacted screenshots, reasons with a vision LLM, and drives the browser for you — while PII (names, emails, phones, addresses, IDs) is detected and black-boxed **locally** before anything is sent anywhere. It can also run a dedicated **research mode** that opens multiple tabs, searches real sites instead of answering from memory, and reports back with a sourced, detailed answer. Web search itself runs through the **Exa search API** (`exa_search`) by default instead of navigating to a search engine tab and scrolling — real page highlights come back in one call, and it's the go-to for academic/scholarly queries too.
+Cleo sits in your Chrome side panel and browses the web for you. Tell it what you want in plain English — "find the cheapest Sony headset, filter by hybrid, give me the top 5" — and it looks at the page like you would, decides what to click or type next, and just does it.
+
+The part most browser agents skip: before a single screenshot leaves your machine, Cleo blacks out anything that looks like PII, names, emails, phone numbers, addresses, IDs — using a model that runs **entirely on-device**. It can still click and type into those fields, it just can't *read* them, and neither can the model on the other end.
+
+Want it to actually go find something instead of guessing from memory? Flip on **Research mode**, Cleo opens real tabs, reads real pages, cites what it finds, and comes back with a proper sourced answer. Web search along the way runs through **Exa** by default, instead of the old "open Google, scroll the results" routine, one API call, real highlights, done.
+
+<p align="center">
+  <img src="cleo_start_screen.gif" alt="Cleo start screen" width="640">
+</p>
+
+## See it in action
+
+<table>
+<tr>
+<td width="50%">
+<img src="cleo_feature_sidebar.png" alt="Side panel chat" width="100%">
+<br>
+<sub>The side panel — chat stream, collapsible reasoning, and a screenshot for every step Cleo takes.</sub>
+</td>
+<td width="50%">
+<img src="cleo_feature_browsing_web.png" alt="Cleo browsing" width="100%">
+<br>
+<sub>Cleo out in the wild — reading a real page and deciding what to do next.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%">
+<img src="cleo_feature_research.png" alt="Research mode" width="100%">
+<br>
+<sub>Research mode — real sources, not a guess. Every claim traces back to a page it actually opened.</sub>
+</td>
+<td width="50%">
+<img src="cleo_feature_settings_bar.png" alt="Settings" width="100%">
+<br>
+<sub>Bring your own OpenRouter key (and Exa key) or just use the built-in backend — your call.</sub>
+</td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="cleo_feature_drawing_himself.png" alt="Cleo drawing itself" width="480">
+  <br>
+  <sub>Vision-driven means it's not stuck to forms and buttons — canvas works too.</sub>
+</p>
 
 ## Architecture
 
-Every process, message channel, and storage boundary in the extension — side panel, service worker, content script, offscreen document, CDP, and the two ways step-decisions get made (local Flask backend vs. calling OpenRouter directly with your own key).
+For anyone who wants the full picture: every process, message channel, and storage boundary in the extension — side panel, service worker, content script, offscreen document, CDP, and the two ways step-decisions get made (local Flask backend vs. calling OpenRouter directly with your own key).
 
 ```mermaid
 flowchart TB
@@ -310,11 +357,7 @@ flowchart LR
 - **Fail-safe redaction** — OCR + ONNX PII model + ONNX face detector + regex/DOM regions are union-merged; PII never leaves the machine unmasked.
 - **Two ways to reach the model** — a local Flask backend behind a demo Bearer-token auth, or bypass it entirely and call OpenRouter directly with your own key (mirrors the backend's prompts exactly; both paths kept in sync).
 
-## What is Cleo?
-
-A privacy-first browser automation agent. You give it a task in plain English ("find the cheapest Sony headset, filter by hybrid, give me the top 5"); it observes pages through **redacted screenshots**, reasons with a vision LLM, and executes real browser actions. Anything that looks like PII — names, emails, phone numbers, addresses, IDs — is detected by an **on-device ONNX model** and black-boxed before the screenshot ever leaves your machine. Cleo can still *use* redacted fields (type into them, click them) — it just can't *read* them.
-
-**Quick features**
+## Features
 
 - Task compiler: an intermediate model turns vague requests into a structured spec — goal, task type, success criteria, constraints, ambiguities — so "done" is checkable, not a feeling
 - Research mode: a dedicated button that searches via Exa and opens tabs across the right sites for the question (YouTube/Reddit/marketplaces/Wikipedia when that fits better than a general search), is deterministically blocked from answering until it has actually read a real source, and finishes with a detailed, sourced report
@@ -330,6 +373,8 @@ A privacy-first browser automation agent. You give it a task in plain English ("
 - Anti-stall: no-progress detection, scroll-run detection, tab-pool-loop detection, empty-response detection, ungrounded-answer gate (research mode or exa_search use), backend watchdog, auto-resume
 
 ## How Cleo compares
+
+Where does it actually sit next to everything else in this space?
 
 | | Cleo | Cloud agents (OpenAI Operator, Anthropic Computer Use) | Privacy proxies (Kiji Privacy Proxy) | Forked browsers (BrowserOS, Nanobrowser) | Orchestrator extensions (browser-use style) |
 |---|---|---|---|---|---|
