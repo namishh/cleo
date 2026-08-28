@@ -4,11 +4,11 @@
 
 # Cleo
 
-Cleo sits in your Chrome side panel and browses the web for you. Tell it what you want in plain English — "find the cheapest Sony headset, filter by hybrid, give me the top 5" — and it looks at the page like you would, decides what to click or type next, and just does it.
+Cleo sits in your Chrome side panel and browses the web for you. Tell it what you want in plain English, something like "find the cheapest Sony headset, filter by hybrid, give me the top 5", and it looks at the page like you would, decides what to click or type next, and does it.
 
-The part most browser agents skip: before a single screenshot leaves your machine, Cleo blacks out anything that looks like PII, names, emails, phone numbers, addresses, IDs — using a model that runs **entirely on-device**. It can still click and type into those fields, it just can't *read* them, and neither can the model on the other end.
+The part most browser agents skip: before a screenshot leaves your machine, Cleo blacks out anything that looks like PII (names, emails, phone numbers, addresses, IDs) using a model that runs entirely on-device. It can still click and type into those fields, it just can't *read* them, and neither can whatever model is on the other end of the request.
 
-Want it to actually go find something instead of guessing from memory? Flip on **Research mode**, Cleo opens real tabs, reads real pages, cites what it finds, and comes back with a proper sourced answer. Web search along the way runs through **Exa** by default, instead of the old "open Google, scroll the results" routine, one API call, real highlights, done.
+There's also a Research mode for when you want it to actually go find something instead of answering from memory. It opens real tabs, reads real pages, and comes back with a sourced answer instead of a guess. Web search along the way runs through Exa by default rather than the usual "open Google, scroll the results page" routine, since one API call gets real page highlights back directly.
 
 <p align="center">
   <img src="cleo_start_screen.gif" alt="Cleo start screen" width="640">
@@ -21,24 +21,24 @@ Want it to actually go find something instead of guessing from memory? Flip on *
 <td width="50%">
 <img src="cleo_feature_sidebar.png" alt="Side panel chat" width="100%">
 <br>
-<sub>The side panel — chat stream, collapsible reasoning, and a screenshot for every step Cleo takes.</sub>
+<sub>The side panel: chat stream, collapsible reasoning, and a screenshot for every step Cleo takes.</sub>
 </td>
 <td width="50%">
 <img src="cleo_feature_browsing_web.png" alt="Cleo browsing" width="100%">
 <br>
-<sub>Cleo out in the wild — reading a real page and deciding what to do next.</sub>
+<sub>Reading a real page and deciding what to click next.</sub>
 </td>
 </tr>
 <tr>
 <td width="50%">
 <img src="cleo_feature_research.png" alt="Research mode" width="100%">
 <br>
-<sub>Research mode — real sources, not a guess. Every claim traces back to a page it actually opened.</sub>
+<sub>Research mode. Every claim in the answer traces back to a page it actually opened, not a guess.</sub>
 </td>
 <td width="50%">
 <img src="cleo_feature_settings_bar.png" alt="Settings" width="100%">
 <br>
-<sub>Bring your own OpenRouter key (and Exa key) or just use the built-in backend — your call.</sub>
+<sub>Bring your own OpenRouter key (and Exa key), or just use the built-in backend.</sub>
 </td>
 </tr>
 </table>
@@ -46,8 +46,43 @@ Want it to actually go find something instead of guessing from memory? Flip on *
 <p align="center">
   <img src="cleo_feature_drawing_himself.png" alt="Cleo drawing itself" width="480">
   <br>
-  <sub>Vision-driven means it's not stuck to forms and buttons — canvas works too.</sub>
+  <sub>It's vision-driven, so it's not stuck to forms and buttons. Canvas works too.</sub>
 </p>
+
+## Running it locally
+
+You need the extension loaded in Chrome, and a way for it to reach a model. The bundled Flask backend is the quickest path.
+
+**Backend**
+
+```sh
+cd backend
+cp .env.sample .env
+```
+
+Fill in `.env`:
+
+- `OPENROUTER_API_KEY`, required, get one at [openrouter.ai](https://openrouter.ai)
+- `OPENROUTER_MODEL`, optional, defaults to `google/gemini-2.0-flash-001`
+- `OPENROUTER_COMPILATION_MODEL`, optional, a stronger/pricier model for one-shot task compilation (runs once per task, not once per step), falls back to `OPENROUTER_MODEL` if unset
+- `CLEO_AUTH_TOKEN`, optional, defaults to `9876543210`, change it if this backend is reachable beyond your own machine
+- `EXA_API_KEY`, optional, powers `exa_search`; without it Cleo falls back to a plain `open_tab` Google search
+
+Then, with [uv](https://docs.astral.sh/uv/) installed:
+
+```sh
+uv run main.py
+```
+
+That starts the backend on `http://127.0.0.1:5001`.
+
+**Extension**
+
+1. Open `chrome://extensions`, turn on Developer mode
+2. Click "Load unpacked" and select the `extension` folder
+3. Open the side panel, go to Settings, and check the auth token there matches what's in `.env` (or leave both at the `9876543210` default)
+
+Would rather skip the backend entirely? Flip on direct mode in Settings and paste in your own OpenRouter key (and an Exa key, if you have one). Cleo then talks to OpenRouter straight from the extension, no server involved.
 
 ## Architecture
 
@@ -347,34 +382,26 @@ flowchart LR
     Merge2 --> Redacted2["Redacted image"]
 ```
 
-- **Task compiler** — an intermediate model turns vague requests into a structured spec (goal, task type, success criteria, constraints, ambiguities) once per task; follow-ups re-compile against the existing spec. It can run a stronger/pricier model than the per-step loop (`OPENROUTER_COMPILATION_MODEL`), since it runs once per task instead of once per step. The vision model checks every screen against the success criteria, which makes "done" a checkable condition instead of a feeling.
-- **Research mode** — a dedicated button that forces real browsing over answering from the model's own training knowledge: it must open and read at least one real source (found via `exa_search`, or a site-specific destination like YouTube/Reddit/a marketplace/Wikipedia when that fits the question better) before it's allowed to answer, enforced deterministically in code, not just requested in the prompt. Ends with a detailed, source-attributed report and an automatically-compiled sources list.
-- **Web search (`exa_search`)** — the default way the agent looks things up, in both normal and research mode: one Exa API call returns real page titles/URLs/highlights, replacing "navigate to a search engine, then scroll the results." Normal mode uses `type: "auto"`; research mode uses `type: "deep"`. Routes through the backend's own `EXA_API_KEY` by default; in direct mode it uses the user's own Exa key from settings (optional), or falls back to a traditional `open_tab` Google search if no key is set or the Exa call errors. It's a discovery step, not a source: the same deterministic gate that guards research mode also blocks an answer/done coming right off exa_search's snippets in *any* mode, until the agent has actually `open_tab`'d a result and `remember`'d something from the page itself.
-- **Per-chat isolation** — each chat has its own state (tab, tab pool, history, findings, step counter, spec, mode); multiple chats run in parallel on different tabs.
-- **Resumable** — steps persist immediately; if the service worker is recycled, interrupted tasks auto-resume.
-- **Self-healing** — debugger re-attach, new-tab adoption, tab-foreground activation, restricted-page redirect, screenshot fallbacks, backend watchdog, offscreen retry.
-- **Notified** — desktop notification when a background chat finishes.
-- **Fail-safe redaction** — OCR + ONNX PII model + ONNX face detector + regex/DOM regions are union-merged; PII never leaves the machine unmasked.
-- **Two ways to reach the model** — a local Flask backend behind a demo Bearer-token auth, or bypass it entirely and call OpenRouter directly with your own key (mirrors the backend's prompts exactly; both paths kept in sync).
-
 ## Features
 
-- Task compiler: an intermediate model turns vague requests into a structured spec — goal, task type, success criteria, constraints, ambiguities — so "done" is checkable, not a feeling
-- Research mode: a dedicated button that searches via Exa and opens tabs across the right sites for the question (YouTube/Reddit/marketplaces/Wikipedia when that fits better than a general search), is deterministically blocked from answering until it has actually read a real source, and finishes with a detailed, sourced report
-- Exa-powered web search (`exa_search`) as the default lookup in both modes — real highlights in one API call instead of opening a search tab and scrolling; falls back to a traditional Google search if no key/an error occurs
-- Chrome side-panel chat interface with streaming responses, stick-to-bottom scrolling
-- Collapsible per-message reasoning: screenshot + note + commands for every step
-- Settings panel: swap the backend for a direct OpenRouter connection with your own key (optionally your own Exa key too), set the auth token, customize Cleo's display name and your avatar gradient
-- Multiple chats, running in parallel, persisted locally (`unlimitedStorage`)
-- Auto-titled chats, desktop notifications on completion
-- 20+ browser actions: click, type, key combos, scroll, drag, hover, select, navigate, back/forward, download, PDF export, clipboard, read_text, scroll_into_view, remember
-- Works on background tabs (CDP input + renderer screenshots); auto-redirects off new-tab/chrome:// pages before starting
-- Research workflow: open items → remember facts (with source URL) → return to list → summarize top N
-- Anti-stall: no-progress detection, scroll-run detection, tab-pool-loop detection, empty-response detection, ungrounded-answer gate (research mode or exa_search use), backend watchdog, auto-resume
+The core loop starts with a task compiler: an intermediate model turns a vague request into a structured spec (goal, task type, success criteria, constraints, ambiguities) once per task, and follow-ups re-compile against that same spec instead of starting over. It's allowed to run a stronger, pricier model than the per-step loop uses (`OPENROUTER_COMPILATION_MODEL`), since it only runs once. The point of the spec is that the model can check each screen against real success criteria, so "done" is something it can verify instead of just guess at.
+
+Research mode is a separate button, not a toggle on the prompt. It has to open and read at least one real source (via `exa_search`, or a site it decides fits better, YouTube, Reddit, a marketplace, Wikipedia) before it's allowed to answer, and that's enforced in code, not just requested in a prompt. It ends with a written report and a sources list built from the pages it actually read.
+
+Web search itself goes through Exa by default in both modes (normal uses `type: "auto"`, research uses `type: "deep"`), one call back with real page titles, URLs, and highlights, instead of opening a tab and scrolling a results page. No Exa key configured, or the call fails? It falls back to a plain `open_tab` Google search. Either way, Exa results are a discovery step, not a source: Cleo can't answer off search snippets alone in any mode, it still has to open a result and read it.
+
+Everything else, in short:
+
+- Chrome side-panel chat with streaming responses and collapsible reasoning (screenshot, note, and commands for every step)
+- Multiple chats running in parallel, each with its own tab, tab pool, history, and step counter, persisted locally, auto-titled, and picked back up automatically if the service worker gets recycled mid-task
+- Settings to swap the backend for a direct OpenRouter connection with your own key (and your own Exa key), set the auth token, and pick a display name and avatar gradient
+- 20+ browser actions: click, type, key combos, scroll, drag, hover, select, navigate, back/forward, download, PDF export, clipboard, read text, remember
+- Works on background tabs, and redirects off new-tab/chrome:// pages automatically before starting
+- Notices when it's stuck (page hasn't changed in a few steps, too many scrolls in a row, juggling tabs without acting, an empty response) and nudges itself back on track instead of looping forever
+- Self-healing around the fiddly parts of automating a real browser: the debugger reattaches if Chrome detaches it, new tabs get adopted, screenshot capture retries, the local backend gets a watchdog ping
+- Desktop notification when a background chat finishes
 
 ## How Cleo compares
-
-Where does it actually sit next to everything else in this space?
 
 | | Cleo | Cloud agents (OpenAI Operator, Anthropic Computer Use) | Privacy proxies (Kiji Privacy Proxy) | Forked browsers (BrowserOS, Nanobrowser) | Orchestrator extensions (browser-use style) |
 |---|---|---|---|---|---|
